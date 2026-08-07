@@ -164,7 +164,7 @@ param bypasses the in-memory cache and re-reads the file directly.
 ## Persistent history
 
 Successful live refreshes write one aggregate snapshot per agent per Sydney
-calendar day to a local D1/SQLite database. Repeated refreshes on the same day
+calendar day to `.cache/history.json`. Repeated refreshes on the same day
 replace that day's snapshot instead of creating duplicates.
 
 Stored fields are limited to:
@@ -175,19 +175,20 @@ Stored fields are limited to:
 
 Ticket subjects, messages, contacts, and other customer data are not stored.
 
-The local database files live under:
+The local history file lives at:
 
 ```text
-.wrangler/state/v3/d1/
+.cache/history.json
 ```
 
-This directory is ignored by Git but survives app and machine restarts. History
+This file is ignored by Git but survives app and machine restarts. History
 is retained for 400 days. Weekly values are averages of the available daily
 point-in-time snapshots, not sums.
 
-History begins with the first successful live refresh after the database
-migration. The API cannot reconstruct queue states from dates before snapshots
-were collected, and snapshots are not collected while the local app is off.
+After each successful cache write, the warmer calls the local dashboard refresh
+endpoint so the daily snapshot is persisted without requiring a browser visit.
+The API cannot reconstruct queue states from dates before snapshots were
+collected, and snapshots are not collected while the local app is off.
 
 **Metric definition change (2026-07-28):** Snapshots collected before this date
 counted any public outgoing message (including AI replies) as a human reply.
@@ -272,9 +273,9 @@ app/
   page.tsx                 Three-column interactive dashboard
   globals.css              Dr. Woof dashboard styling
 db/
-  schema.ts                D1/SQLite metric snapshot schema
+  schema.ts                Legacy D1 metric snapshot schema
 drizzle/
-  *.sql                    Database migrations
+  *.sql                    Legacy database migrations
 scripts/
   warm-cache.py            External cache warmer (launchd, every 3h)
 tests/
@@ -283,6 +284,7 @@ tests/
   rendered-html.test.mjs   Build/render smoke test
 .cache/
   dashboard.json           Live data cache (written by warmer, read by server)
+  history.json             Aggregate daily history (no customer content)
 .env.example               Safe configuration template
 .env.local                 Real token + agent IDs (gitignored)
 wrangler.migrations.jsonc  Local D1 migration configuration
@@ -309,9 +311,8 @@ npm run db:migrate:local  # apply pending migrations to local history storage
 6. Keep request concurrency conservative because the public API documentation
    does not specify rate limits.
 7. Validate live sender types before changing reply attribution.
-8. Do not add a database unless historical trends or snapshot retention are
-   explicitly required. The current D1 database exists only for aggregate
-   history.
+8. Keep historical storage aggregate-only. `.cache/history.json` must never
+   contain ticket subjects, messages, contacts, or other customer content.
 9. The `.openai/hosting.json` file belongs to the starter runtime. This project
    is currently intended for local-only use and has no Sites `project_id`.
 

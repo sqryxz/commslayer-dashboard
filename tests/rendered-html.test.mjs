@@ -31,8 +31,8 @@ test("server-renders the Commslayer dashboard shell", async () => {
   assert.match(html, /<title>Commslayer Dashboard \| Dr\. Woof<\/title>/i);
   assert.match(html, /agent queue performance/i);
   assert.match(html, /Agent metrics/i);
-  assert.match(html, /Ticket detail/i);
-  assert.match(html, /Work the queue/i);
-  assert.match(html, /Work the queue/i);
+  assert.match(html, /Manager coaching queue/i);
+  assert.match(html, /Coach the tickets that need intervention/i);
+  assert.match(html, /Needs coaching/i);
   assert.doesNotMatch(html, /codex-preview|react-loading-skeleton/i);
 });

@@ -7,7 +7,7 @@ server) and writes it to a JSON snapshot file that the server reads as
 its cache.  This avoids the Vinext Worker request-timeout limit that kills
 long-running synchronous HTTP handlers.
 
-Runs every 6 hours via launchd (00:00, 06:00, 12:00, 18:00 HKT).
+Runs every 3 hours via launchd.
 """
 
 import json
@@ -31,6 +31,7 @@ DEFAULT_REQUEST_INTERVAL_MS = 1050
 DEFAULT_FIRST_REPLY_HOURS = 24
 DEFAULT_BACKLOG_HOURS = 48
 MAX_PAGES = 500
+DASHBOARD_REFRESH_URL = "http://127.0.0.1:3004/api/dashboard?refresh=1"
 
 
 def log(message):
@@ -55,6 +56,21 @@ def load_env():
                 key, _, value = line.partition("=")
                 env[key.strip()] = value.strip()
     return env
+
+
+def sync_history_snapshot():
+    """Tell the local dashboard to persist and reload the fresh cache."""
+    req = urllib.request.Request(
+        DASHBOARD_REFRESH_URL,
+        headers={"Accept": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            resp.read()
+        log("History snapshot synced")
+    except Exception as exc:
+        # A browser request will retry the same idempotent daily upsert later.
+        log(f"History snapshot deferred: {exc}")
 
 
 # --- Rate limiter (mirrors commslayer.mjs) ---
@@ -247,6 +263,91 @@ def build_dashboard(conversations, messages_map, now_ms, thresholds):
     }
 
 
+def fetch_resolved_counts(token, api_base):
+    """Fetch resolved conversations from last 14 days, grouped by date + assignee.
+    Returns a dict: {date: {agentId: count, ..., 'total': N}}"""
+    from datetime import timedelta
+    cutoff = datetime.now(timezone.utc) - timedelta(days=14)
+    cutoff_str = cutoff.strftime("%Y-%m-%d")
+    resolved = []
+    cursor = None
+    for _ in range(100):
+        params = {"filter[status]": "resolved", "page[limit]": "100"}
+        if cursor:
+            params["page[after]"] = cursor
+        url = f"{api_base}/conversations?{urllib.parse.urlencode(params)}"
+        payload = api_request(url, token)
+        records = payload.get("data", [])
+        stopped = False
+        for rec in records:
+            attrs = rec.get("attributes", rec)
+            updated = attrs.get("updated_at", "")
+            if updated:
+                rec_date = updated[:10]
+                if rec_date >= cutoff_str:
+                    resolved.append(rec)
+                else:
+                    stopped = True
+        cursor = payload.get("meta", {}).get("next_cursor")
+        if not cursor or stopped:
+            break
+    log(f"  Fetched {len(resolved)} resolved conversations (last 14 days)")
+
+    # Group by date + assignee
+    by_date = {}
+    agent_ids = {"10116", "10207", "8720"}
+    for rec in resolved:
+        attrs = rec.get("attributes", rec)
+        updated = attrs.get("updated_at", "")
+        if not updated:
+            continue
+        date = updated[:10]
+        assignee = str(attrs.get("assignee_id", ""))
+        if date not in by_date:
+            by_date[date] = {"total": 0, "mari": 0, "michael": 0, "gian": 0, "unassigned": 0}
+        by_date[date]["total"] += 1
+        if assignee == "10116":
+            by_date[date]["mari"] += 1
+        elif assignee == "10207":
+            by_date[date]["michael"] += 1
+        elif assignee == "8720":
+            by_date[date]["gian"] += 1
+        else:
+            by_date[date]["unassigned"] += 1
+
+    return by_date
+
+
+RESOLUTIONS_FILE = os.path.join(PROJECT_DIR, ".cache", "resolutions.json")
+
+
+def load_resolution_history():
+    """Load existing resolution history, merge with new data."""
+    try:
+        with open(RESOLUTIONS_FILE) as f:
+            return json.load(f)
+    except Exception:
+        return {"version": 1, "rows": []}
+
+
+def merge_resolution_data(existing, new_data):
+    """Merge new resolution counts into existing history (newest wins)."""
+    merged = {r["date"]: r for r in existing.get("rows", [])}
+    for date, counts in new_data.items():
+        merged[date] = {
+            "date": date,
+            "total": counts["total"],
+            "mari": counts["mari"],
+            "michael": counts["michael"],
+            "gian": counts["gian"],
+            "unassigned": counts["unassigned"],
+        }
+    rows = sorted(merged.values(), key=lambda r: r["date"])
+    # Keep last 400 days
+    rows = rows[-400:]
+    return {"version": 1, "rows": rows}
+
+
 def main():
     log("Starting direct cache refresh...")
 
@@ -316,8 +417,26 @@ def main():
         "source": "live",
         "refreshedAt": datetime.fromtimestamp(now_ms / 1000, tz=timezone.utc).isoformat(),
         "notice": None,
-        "history": {"status": "unavailable", "storage": "local-d1", "retentionDays": 400, "snapshotDays": 0, "firstSnapshotDate": None, "lastSnapshotDate": None, "weekly": []},
+        "history": {"status": "unavailable", "storage": "local-json", "retentionDays": 400, "snapshotDays": 0, "firstSnapshotDate": None, "lastSnapshotDate": None, "weekly": []},
     }
+
+    # Fetch resolved conversations for clearance rate tracking
+    log("  Fetching resolved conversations...")
+    try:
+        resolved_counts = fetch_resolved_counts(token, api_base)
+        existing_res = load_resolution_history()
+        merged_res = merge_resolution_data(existing_res, resolved_counts)
+        os.makedirs(os.path.dirname(RESOLUTIONS_FILE), exist_ok=True)
+        with open(RESOLUTIONS_FILE, "w") as f:
+            json.dump(merged_res, f, indent=2)
+        log(f"  Resolutions saved: {len(merged_res['rows'])} days")
+
+        # Add to payload
+        recent_resolutions = merged_res["rows"][-14:]
+        payload["resolutions"] = recent_resolutions
+    except Exception as e:
+        log(f"  Resolutions fetch failed: {e}")
+        payload["resolutions"] = []
 
     # Write cache file
     os.makedirs(os.path.dirname(CACHE_PATH), exist_ok=True)
@@ -325,6 +444,7 @@ def main():
         json.dump(payload, f)
 
     log(f"Cache written to {CACHE_PATH}")
+    sync_history_snapshot()
     log(f"Total: {combined_metrics['totalActive']} active, {combined_metrics['newTotal']} new, {combined_metrics['backlogTotal']} backlog")
 
 

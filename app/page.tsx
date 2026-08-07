@@ -70,15 +70,32 @@ type WeeklyTrend = {
   agents: WeeklyAgentTrend[];
 };
 
+type DailyAgentSnapshot = {
+  agentName: string;
+  assigneeId: string;
+  newTotal: number;
+  newUnder24: number;
+  newOver24: number;
+  backlogTotal: number;
+  backlogOver48: number;
+  totalActive: number;
+};
+
+type DailySnapshot = {
+  snapshotDate: string;
+  agents: DailyAgentSnapshot[];
+};
+
 type HistorySummary = {
   status: "ready" | "unavailable";
-  storage: "local-d1";
+  storage: "local-d1" | "local-json";
   detail?: string;
   retentionDays: number;
   snapshotDays: number;
   firstSnapshotDate: string | null;
   lastSnapshotDate: string | null;
   weekly: WeeklyTrend[];
+  daily?: DailySnapshot[];
 };
 
 type DashboardPayload = {
@@ -98,9 +115,19 @@ type DashboardPayload = {
   refreshedAt: string;
   notice: string | null;
   history: HistorySummary;
+  resolutions?: ResolutionRow[];
 };
 
-type Filter = "all" | "new" | "backlog" | "breached";
+type ResolutionRow = {
+  date: string;
+  total: number;
+  mari: number;
+  michael: number;
+  gian: number;
+  unassigned: number;
+};
+
+type Filter = "coaching" | "first-reply" | "re-contact" | "all";
 
 const numberFormatter = new Intl.NumberFormat("en-AU");
 const dateFormatter = new Intl.DateTimeFormat("en-AU", {
@@ -141,6 +168,16 @@ const metricDefinitions = {
   totalActive:
     "Open conversations with at least one customer message. Equals New + Backlog.",
 } as const;
+type MetricDefinitionKey = keyof typeof metricDefinitions;
+
+const metricDefinitionLabels: Record<MetricDefinitionKey, string> = {
+  newTotal: "NEW",
+  newUnder24: "<24H",
+  newOver24: ">24H",
+  backlogTotal: "BACKLOG",
+  backlogOver48: ">48H",
+  totalActive: "OPEN",
+};
 
 function formatDate(value: string | null) {
   return value ? dateFormatter.format(new Date(value)) : "—";
@@ -150,6 +187,10 @@ function formatHours(value: number | null) {
   if (value === null) return "Not waiting";
   if (value < 1) return "<1h";
   return `${numberFormatter.format(value)}h`;
+}
+
+function ticketCount(value: number) {
+  return `${numberFormatter.format(value)} ticket${value === 1 ? "" : "s"}`;
 }
 
 function bucketCopy(bucket: Bucket) {
@@ -162,40 +203,85 @@ function bucketCopy(bucket: Bucket) {
   }[bucket];
 }
 
+function coachingCopy(ticket: Ticket) {
+  return {
+    "new-over-24": {
+      focus: "First-response discipline",
+      action:
+        "Reply now. Review why this ticket passed 24 hours without a human response.",
+      tone: "danger",
+    },
+    "backlog-over-48": {
+      focus: "Follow-up discipline",
+      action:
+        "Reply now. Coach on prioritising customer re-contacts before 48 hours.",
+      tone: "warning",
+    },
+    "new-under-24": {
+      focus: "EOD prevention",
+      action: "Clear before EOD so this does not become tomorrow’s breach.",
+      tone: "good",
+    },
+    backlog: {
+      focus: ticket.isWaiting ? "Backlog prevention" : "Quality review",
+      action: ticket.isWaiting
+        ? "Respond before 48 hours and confirm who owns the next response."
+        : "No response is due; use this ticket only for quality coaching.",
+      tone: ticket.isWaiting ? "neutral" : "muted",
+    },
+    unclassified: {
+      focus: "Classification review",
+      action: "Confirm the ticket has a valid customer message and clear ownership.",
+      tone: "muted",
+    },
+  }[ticket.bucket];
+}
+
 function QueueRow({
   icon,
   label,
   value,
-  definition,
-  tooltipId,
+  metricKey,
+  onActivate,
+  onDeactivate,
   tone = "default",
 }: {
   icon: string;
   label: string;
   value: number;
-  definition: string;
-  tooltipId: string;
+  metricKey: MetricDefinitionKey;
+  onActivate: (metricKey: MetricDefinitionKey) => void;
+  onDeactivate: () => void;
   tone?: "default" | "good" | "warning" | "danger";
 }) {
   return (
     <li
       className={`queue-row queue-row-${tone}`}
       tabIndex={0}
-      aria-describedby={tooltipId}
+      aria-describedby="metric-definition-popup"
+      onMouseEnter={() => onActivate(metricKey)}
+      onMouseLeave={onDeactivate}
+      onFocus={() => onActivate(metricKey)}
+      onBlur={onDeactivate}
     >
       <span className="queue-row-icon" aria-hidden="true">
         {icon}
       </span>
       <span className="queue-row-label">{label}</span>
       <strong>{numberFormatter.format(value)}</strong>
-      <span id={tooltipId} className="metric-tooltip" role="tooltip">
-        {definition}
-      </span>
     </li>
   );
 }
 
-function AgentScorecard({ dashboard }: { dashboard: AgentDashboard }) {
+function AgentScorecard({
+  dashboard,
+  onActivate,
+  onDeactivate,
+}: {
+  dashboard: AgentDashboard;
+  onActivate: (metricKey: MetricDefinitionKey) => void;
+  onDeactivate: () => void;
+}) {
   const { agent, metrics } = dashboard;
 
   return (
@@ -218,47 +304,53 @@ function AgentScorecard({ dashboard }: { dashboard: AgentDashboard }) {
           icon="🌱"
           label="NEW"
           value={metrics.newTotal}
-          definition={metricDefinitions.newTotal}
-          tooltipId={`metric-tooltip-${agent.assigneeId}-new`}
+          metricKey="newTotal"
+          onActivate={onActivate}
+          onDeactivate={onDeactivate}
         />
         <QueueRow
           icon="📌"
           label="<24H"
           value={metrics.newUnder24}
-          definition={metricDefinitions.newUnder24}
-          tooltipId={`metric-tooltip-${agent.assigneeId}-new-under-24`}
+          metricKey="newUnder24"
+          onActivate={onActivate}
+          onDeactivate={onDeactivate}
           tone="good"
         />
         <QueueRow
           icon="🐸"
           label=">24H"
           value={metrics.newOver24}
-          definition={metricDefinitions.newOver24}
-          tooltipId={`metric-tooltip-${agent.assigneeId}-new-over-24`}
+          metricKey="newOver24"
+          onActivate={onActivate}
+          onDeactivate={onDeactivate}
           tone="danger"
         />
         <QueueRow
           icon="⚠️"
           label="BACKLOG"
           value={metrics.backlogTotal}
-          definition={metricDefinitions.backlogTotal}
-          tooltipId={`metric-tooltip-${agent.assigneeId}-backlog`}
+          metricKey="backlogTotal"
+          onActivate={onActivate}
+          onDeactivate={onDeactivate}
           tone="warning"
         />
         <QueueRow
           icon="🌀"
           label=">48H"
           value={metrics.backlogOver48}
-          definition={metricDefinitions.backlogOver48}
-          tooltipId={`metric-tooltip-${agent.assigneeId}-backlog-over-48`}
+          metricKey="backlogOver48"
+          onActivate={onActivate}
+          onDeactivate={onDeactivate}
           tone="warning"
         />
         <QueueRow
           icon="⚠️"
           label="OPEN"
           value={metrics.totalActive}
-          definition={metricDefinitions.totalActive}
-          tooltipId={`metric-tooltip-${agent.assigneeId}-open`}
+          metricKey="totalActive"
+          onActivate={onActivate}
+          onDeactivate={onDeactivate}
           tone="default"
         />
       </ul>
@@ -418,6 +510,365 @@ function WeeklyTrendChart({
   );
 }
 
+type ChartMetricKey =
+  | "newTotal"
+  | "newUnder24"
+  | "newOver24"
+  | "backlogTotal"
+  | "backlogOver48"
+  | "totalActive";
+
+const chartMetricOptions: Array<{ key: ChartMetricKey; label: string }> = [
+  { key: "newTotal", label: "New" },
+  { key: "newUnder24", label: "<24H" },
+  { key: "newOver24", label: ">24H" },
+  { key: "backlogTotal", label: "Backlog" },
+  { key: "backlogOver48", label: ">48H" },
+  { key: "totalActive", label: "Open" },
+];
+
+function dailyMetricValue(agent: DailyAgentSnapshot, metric: ChartMetricKey): number {
+  switch (metric) {
+    case "newTotal": return agent.newTotal;
+    case "newUnder24": return agent.newUnder24;
+    case "newOver24": return agent.newOver24;
+    case "backlogTotal": return agent.backlogTotal;
+    case "backlogOver48": return agent.backlogOver48;
+    case "totalActive": return agent.totalActive;
+    default: return 0;
+  }
+}
+
+function DailyHistoryChart({
+  daily,
+  metric,
+}: {
+  daily: DailySnapshot[];
+  metric: ChartMetricKey;
+}) {
+  const days = daily.slice(-10);
+  const agentOrder = ["10116", "10207", "8720"];
+  const latestAgents = days.at(-1)?.agents ?? [];
+  const agents = agentOrder.flatMap((id) => {
+    const a = latestAgents.find((item) => item.assigneeId === id);
+    return a ? [a] : [];
+  });
+
+  const width = 900;
+  const height = 290;
+  const padding = { top: 22, right: 28, bottom: 42, left: 48 };
+  const plotWidth = width - padding.left - padding.right;
+  const plotHeight = height - padding.top - padding.bottom;
+
+  // All values including totals
+  const agentValues = days.flatMap((day) =>
+    day.agents.map((a) => dailyMetricValue(a, metric)),
+  );
+  const totalValues = days.map(
+    (day) => day.agents.reduce((sum, a) => sum + dailyMetricValue(a, metric), 0),
+  );
+  const maximum = Math.max(1, ...agentValues, ...totalValues);
+
+  const x = (i: number) =>
+    padding.left +
+    (days.length === 1 ? plotWidth / 2 : (i / (days.length - 1)) * plotWidth);
+  const y = (v: number) => padding.top + plotHeight - (v / maximum) * plotHeight;
+
+  // Linear regression for total trendline
+  const n = days.length;
+  const totalRegression = (() => {
+    if (n < 2) return null;
+    const xs = days.map((_, i) => i);
+    const sumX = xs.reduce((a, b) => a + b, 0);
+    const sumY = totalValues.reduce((a, b) => a + b, 0);
+    const sumXY = xs.reduce((acc, xi, i) => acc + xi * totalValues[i], 0);
+    const sumX2 = xs.reduce((acc, xi) => acc + xi * xi, 0);
+    const slope = (n * sumXY - sumX * sumY) / (n * sumX2 - sumX * sumX);
+    const intercept = (sumY - slope * sumX) / n;
+    return { slope, intercept };
+  })();
+
+  const dayFormatter = new Intl.DateTimeFormat("en-AU", {
+    day: "numeric",
+    month: "short",
+  });
+
+  return (
+    <div className="trend-chart-wrap">
+      <div className="trend-legend" aria-label="Chart legend">
+        {agents.map((agent) => (
+          <span key={agent.assigneeId}>
+            <i style={{ background: agentColors[agent.assigneeId] || "var(--green)" }} />
+            {agent.agentName}
+          </span>
+        ))}
+        <span>
+          <i style={{ background: "var(--text-dim)", opacity: 0.6 }} />
+          Total trend
+        </span>
+      </div>
+      <svg
+        className="trend-chart"
+        viewBox={`0 0 ${width} ${height}`}
+        role="img"
+        aria-label={`${chartMetricOptions.find((o) => o.key === metric)?.label} daily by agent with total trendline`}
+      >
+        {/* Grid lines */}
+        {[0, 0.25, 0.5, 0.75, 1].map((ratio) => {
+          const value = maximum * ratio;
+          const gridY = y(value);
+          return (
+            <g key={ratio}>
+              <line x1={padding.left} x2={width - padding.right} y1={gridY} y2={gridY} className="trend-grid-line" />
+              <text x={padding.left - 10} y={gridY + 4} textAnchor="end" className="trend-axis-label">
+                {Math.round(value)}
+              </text>
+            </g>
+          );
+        })}
+
+        {/* X axis labels */}
+        {days.map((day, index) => (
+          <text key={day.snapshotDate} x={x(index)} y={height - 14} textAnchor="middle" className="trend-axis-label">
+            {dayFormatter.format(new Date(day.snapshotDate + "T00:00:00.000Z"))}
+          </text>
+        ))}
+
+        {/* Total trendline */}
+        {totalRegression && (
+          <line
+            x1={x(0)}
+            y1={y(totalRegression.intercept)}
+            x2={x(n - 1)}
+            y2={y(totalRegression.intercept + totalRegression.slope * (n - 1))}
+            stroke="var(--text-dim)"
+            strokeWidth="2"
+            strokeDasharray="6 4"
+            opacity={0.5}
+          />
+        )}
+
+        {/* Agent lines */}
+        {agents.map((agent) => {
+          const points = days.flatMap((day, index) => {
+            const matching = day.agents.find((a) => a.assigneeId === agent.assigneeId);
+            return matching
+              ? [{ x: x(index), y: y(dailyMetricValue(matching, metric)), value: dailyMetricValue(matching, metric), date: day.snapshotDate }]
+              : [];
+          });
+          const color = agentColors[agent.assigneeId] || "#0f4e59";
+          return (
+            <g key={agent.assigneeId}>
+              <polyline
+                points={points.map((p) => `${p.x},${p.y}`).join(" ")}
+                fill="none"
+                stroke={color}
+                strokeWidth="3"
+                strokeLinejoin="round"
+                strokeLinecap="round"
+              />
+              {points.map((point) => (
+                <circle
+                  key={`${agent.assigneeId}-${point.date}`}
+                  cx={point.x}
+                  cy={point.y}
+                  r="4.5"
+                  fill="var(--off-white)"
+                  stroke={color}
+                  strokeWidth="3"
+                >
+                  <title>
+                    {agent.agentName}, {dayFormatter.format(new Date(point.date + "T00:00:00.000Z"))}: {point.value}
+                  </title>
+                </circle>
+              ))}
+            </g>
+          );
+        })}
+      </svg>
+    </div>
+  );
+}
+
+function DailyHistorySection({
+  history,
+  metric,
+  onMetricChange,
+}: {
+  history: HistorySummary;
+  metric: ChartMetricKey;
+  onMetricChange: (metric: ChartMetricKey) => void;
+}) {
+  const daily = history.daily ?? [];
+  const recentDays = daily.slice(-10);
+
+  return (
+    <section className="queue-health">
+      <div className="section-heading">
+        <div>
+          <p className="eyebrow">10-day trend</p>
+          <h2>Queue history</h2>
+        </div>
+        <div className="refresh-meta">
+          <span>Last refreshed</span>
+        </div>
+      </div>
+
+      <div className="trend-controls" aria-label="Daily chart metric">
+        {chartMetricOptions.map((option) => (
+          <button
+            type="button"
+            key={option.key}
+            className={metric === option.key ? "active" : ""}
+            onClick={() => onMetricChange(option.key)}
+          >
+            {option.label}
+          </button>
+        ))}
+      </div>
+
+      {recentDays.length > 0 ? (
+        <DailyHistoryChart daily={recentDays} metric={metric} />
+      ) : (
+        <div className="history-empty">
+          No daily snapshots available yet. History builds with each live refresh.
+        </div>
+      )}
+    </section>
+  );
+}
+
+function ResolutionChart({ rows }: { rows: ResolutionRow[] }) {
+  const days = rows.slice(-14);
+  const width = 900;
+  const height = 250;
+  const padding = { top: 22, right: 28, bottom: 42, left: 48 };
+  const plotWidth = width - padding.left - padding.right;
+  const plotHeight = height - padding.top - padding.bottom;
+
+  const agents = [
+    { key: "mari" as const, name: "Mari", color: "#26b2dd" },
+    { key: "michael" as const, name: "Michael", color: "#d3aa22" },
+    { key: "gian" as const, name: "Gian", color: "#d96e5f" },
+    { key: "unassigned" as const, name: "Unassigned", color: "#888888" },
+  ];
+
+  const maximum = Math.max(1, ...days.map((d) => d.total));
+  const x = (i: number) =>
+    padding.left +
+    (days.length === 1 ? plotWidth / 2 : (i / (days.length - 1)) * plotWidth);
+  const y = (v: number) => padding.top + plotHeight - (v / maximum) * plotHeight;
+
+  // 7-day rolling average
+  const rollingAvg = days.map((_, i) => {
+    const start = Math.max(0, i - 6);
+    const window = days.slice(start, i + 1);
+    return Math.round(window.reduce((s, d) => s + d.total, 0) / window.length);
+  });
+
+  const dayFormatter = new Intl.DateTimeFormat("en-AU", { day: "numeric", month: "short" });
+
+  return (
+    <div className="trend-chart-wrap">
+      <div className="trend-legend" aria-label="Resolution chart legend">
+        {agents.map((agent) => (
+          <span key={agent.key}>
+            <i style={{ background: agent.color }} />
+            {agent.name}
+          </span>
+        ))}
+        <span>
+          <i style={{ background: "var(--primary)", opacity: 0.6 }} />
+          7-day avg
+        </span>
+      </div>
+      <svg className="trend-chart" viewBox={`0 0 ${width} ${height}`} role="img" aria-label="Daily resolutions by agent with 7-day rolling average">
+        {/* Grid */}
+        {[0, 0.25, 0.5, 0.75, 1].map((ratio) => {
+          const value = maximum * ratio;
+          const gridY = y(value);
+          return (
+            <g key={ratio}>
+              <line x1={padding.left} x2={width - padding.right} y1={gridY} y2={gridY} className="trend-grid-line" />
+              <text x={padding.left - 10} y={gridY + 4} textAnchor="end" className="trend-axis-label">{Math.round(value)}</text>
+            </g>
+          );
+        })}
+
+        {/* X labels */}
+        {days.map((day, index) => (
+          <text key={day.date} x={x(index)} y={height - 14} textAnchor="middle" className="trend-axis-label">
+            {dayFormatter.format(new Date(day.date + "T00:00:00.000Z"))}
+          </text>
+        ))}
+
+        {/* Stacked bars */}
+        {days.map((day, index) => {
+          let cumulative = 0;
+          const barWidth = Math.max(8, plotWidth / days.length * 0.6);
+          return (
+            <g key={day.date}>
+              {agents.map((agent) => {
+                const value = day[agent.key];
+                const barHeight = (value / maximum) * plotHeight;
+                const barY = padding.top + plotHeight - barHeight - (cumulative / maximum) * plotHeight;
+                cumulative += value;
+                return value > 0 ? (
+                  <rect
+                    key={agent.key}
+                    x={x(index) - barWidth / 2}
+                    y={barY}
+                    width={barWidth}
+                    height={barHeight}
+                    fill={agent.color}
+                    rx={1}
+                  >
+                    <title>{agent.name}, {dayFormatter.format(new Date(day.date + "T00:00:00.000Z"))}: {value}</title>
+                  </rect>
+                ) : null;
+              })}
+            </g>
+          );
+        })}
+
+        {/* 7-day rolling average line */}
+        {rollingAvg.length > 1 && (
+          <>
+            <polyline
+              points={rollingAvg.map((avg, i) => `${x(i)},${y(avg)}`).join(" ")}
+              fill="none"
+              stroke="var(--primary)"
+              strokeWidth="2.5"
+              strokeDasharray="5 3"
+              opacity={0.7}
+            />
+            {rollingAvg.map((avg, i) => (
+              <circle key={i} cx={x(i)} cy={y(avg)} r="3" fill="var(--primary)" opacity={0.7}>
+                <title>7-day avg: {avg}/day</title>
+              </circle>
+            ))}
+          </>
+        )}
+      </svg>
+
+      {/* Summary stats */}
+      {days.length >= 2 && (
+        <div style={{ display: "flex", gap: 24, justifyContent: "center", marginTop: 12, flexWrap: "wrap" as const }}>
+          <span style={{ fontSize: 13, color: "var(--text-muted)" }}>
+            Latest: <strong style={{ color: "var(--text)" }}>{days.at(-1)?.total}</strong> resolved
+          </span>
+          <span style={{ fontSize: 13, color: "var(--text-muted)" }}>
+            7-day avg: <strong style={{ color: "var(--primary)" }}>{rollingAvg.at(-1)}</strong>/day
+          </span>
+          <span style={{ fontSize: 13, color: "var(--text-muted)" }}>
+            Tracked agents: <strong style={{ color: "var(--text)" }}>{(days.at(-1)?.mari ?? 0) + (days.at(-1)?.michael ?? 0) + (days.at(-1)?.gian ?? 0)}</strong>
+          </span>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function WeeklyHistory({
   history,
   metric,
@@ -536,12 +987,16 @@ function WeeklyHistory({
 
 export default function Home() {
   const [dashboard, setDashboard] = useState<DashboardPayload | null>(null);
-  const [filter, setFilter] = useState<Filter>("all");
+  const [filter, setFilter] = useState<Filter>("coaching");
+  const [agentFilter, setAgentFilter] = useState("all");
   const [query, setQuery] = useState("");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [activeMetric, setActiveMetric] =
+    useState<MetricDefinitionKey | null>(null);
   const [trendMetric, setTrendMetric] =
     useState<TrendMetric>("totalActive");
+  const [chartMetric, setChartMetric] = useState<ChartMetricKey>("newTotal");
 
   const loadDashboard = useCallback(async (force = false) => {
     setLoading(true);
@@ -584,11 +1039,13 @@ export default function Home() {
     return dashboard.tickets.filter((ticket) => {
       const matchesFilter =
         filter === "all" ||
-        (filter === "new" && ticket.bucket.startsWith("new")) ||
-        (filter === "backlog" && ticket.bucket.startsWith("backlog")) ||
-        (filter === "breached" &&
+        (filter === "first-reply" && ticket.bucket === "new-over-24") ||
+        (filter === "re-contact" && ticket.bucket === "backlog-over-48") ||
+        (filter === "coaching" &&
           (ticket.bucket === "new-over-24" ||
             ticket.bucket === "backlog-over-48"));
+      const matchesAgent =
+        agentFilter === "all" || ticket.assigneeId === agentFilter;
       const matchesQuery =
         !normalizedQuery ||
         ticket.agentName.toLowerCase().includes(normalizedQuery) ||
@@ -598,9 +1055,25 @@ export default function Home() {
           label.toLowerCase().includes(normalizedQuery),
         );
 
-      return matchesFilter && matchesQuery;
+      return matchesFilter && matchesAgent && matchesQuery;
     });
-  }, [dashboard, filter, query]);
+  }, [agentFilter, dashboard, filter, query]);
+
+  const coachingCounts = {
+    coaching:
+      (dashboard?.metrics.newOver24 ?? 0) +
+      (dashboard?.metrics.backlogOver48 ?? 0),
+    "first-reply": dashboard?.metrics.newOver24 ?? 0,
+    "re-contact": dashboard?.metrics.backlogOver48 ?? 0,
+    all: dashboard?.tickets.length ?? 0,
+  };
+
+  const coachingFilterOptions: Array<{ key: Filter; label: string }> = [
+    { key: "coaching", label: "Needs coaching" },
+    { key: "first-reply", label: "First reply overdue" },
+    { key: "re-contact", label: "Re-contact overdue" },
+    { key: "all", label: "All tickets" },
+  ];
 
   return (
     <main>
@@ -678,59 +1151,43 @@ export default function Home() {
             <AgentScorecard
               key={agentDashboard.agent.assigneeId}
               dashboard={agentDashboard}
+              onActivate={setActiveMetric}
+              onDeactivate={() => setActiveMetric(null)}
             />
           ))}
         </section>
 
-        <section className="queue-health">
-          <div className="section-heading">
-            <div>
-              <p className="eyebrow">Queue health</p>
-              <h2>Where attention is needed</h2>
-            </div>
-            <div className="refresh-meta">
-              <span>Last refreshed</span>
-              <strong>{formatDate(dashboard?.refreshedAt ?? null)}</strong>
-            </div>
-          </div>
+        {activeMetric ? (
+          <aside
+            id="metric-definition-popup"
+            className="metric-definition-panel"
+            role="status"
+            aria-live="polite"
+          >
+            <strong>{metricDefinitionLabels[activeMetric]}</strong>
+            <p>{metricDefinitions[activeMetric]}</p>
+          </aside>
+        ) : null}
 
-          <div className="health-grid">
-            {(dashboard?.agents ?? []).map((agentDashboard) => {
-              const { metrics, agent } = agentDashboard;
-              const newTargetRate =
-                metrics.newTotal > 0
-                  ? Math.round((metrics.newUnder24 / metrics.newTotal) * 100)
-                  : 100;
-              const backlogBreachRate =
-                metrics.backlogTotal > 0
-                  ? Math.round((metrics.backlogOver48 / metrics.backlogTotal) * 100)
-                  : 0;
+        {dashboard?.history ? (
+          <DailyHistorySection
+            history={dashboard.history}
+            metric={chartMetric}
+            onMetricChange={setChartMetric}
+          />
+        ) : null}
 
-              return (
-                <article className="health-card" key={agent.assigneeId}>
-                  <div className="health-card-heading">
-                    <span>{agent.name}</span>
-                    <strong>{newTargetRate}% within 24h</strong>
-                  </div>
-                  <div
-                    className="progress-track"
-                    role="progressbar"
-                    aria-label={`${agent.name} new tickets within 24 hours`}
-                    aria-valuenow={newTargetRate}
-                    aria-valuemin={0}
-                    aria-valuemax={100}
-                  >
-                    <span style={{ width: `${newTargetRate}%` }} />
-                  </div>
-                  <p>
-                    {metrics.newOver24} new ticket(s) over target · {backlogBreachRate}% of
-                    backlog over 48h.
-                  </p>
-                </article>
-              );
-            })}
-          </div>
-        </section>
+        {dashboard?.resolutions && dashboard.resolutions.length > 0 ? (
+          <section className="queue-health">
+            <div className="section-heading">
+              <div>
+                <p className="eyebrow">Clearance rate</p>
+                <h2>Daily resolutions</h2>
+              </div>
+            </div>
+            <ResolutionChart rows={dashboard.resolutions} />
+          </section>
+        ) : null}
 
         {dashboard?.history ? (
           <WeeklyHistory
@@ -743,31 +1200,71 @@ export default function Home() {
         <section className="ticket-section">
           <div className="section-heading ticket-heading">
             <div>
-              <p className="eyebrow">Ticket detail</p>
-              <h2>Work the queue</h2>
+              <p className="eyebrow">Manager coaching queue</p>
+              <h2>Coach the tickets that need intervention</h2>
+              <p className="ticket-section-copy">
+                Start with overdue first replies, then overdue customer
+                re-contacts. Tickets are ordered by urgency and waiting time.
+              </p>
             </div>
             <div className="ticket-count">
               {filteredTickets.length} ticket
               {filteredTickets.length === 1 ? "" : "s"}
+              {agentFilter !== "all" ? (
+                <button type="button" onClick={() => setAgentFilter("all")}>
+                  Show all agents
+                </button>
+              ) : null}
             </div>
           </div>
 
+          <div className="coach-agent-grid" aria-label="Filter coaching queue by agent">
+            {(dashboard?.agents ?? []).map((agentDashboard) => {
+              const { agent, metrics } = agentDashboard;
+              const coachingTotal =
+                metrics.newOver24 + metrics.backlogOver48;
+              const isActive = agentFilter === agent.assigneeId;
+
+              return (
+                <button
+                  key={agent.assigneeId}
+                  type="button"
+                  className={`coach-agent-card ${isActive ? "active" : ""}`}
+                  aria-pressed={isActive}
+                  onClick={() =>
+                    setAgentFilter(isActive ? "all" : agent.assigneeId)
+                  }
+                >
+                  <span className="coach-agent-card-heading">
+                    <strong>{agent.name}</strong>
+                    <small>{isActive ? "Showing agent" : "Filter agent"}</small>
+                  </span>
+                  <span className="coach-agent-total">
+                    <strong>{coachingTotal}</strong>
+                    <small>need coaching</small>
+                  </span>
+                  <span className="coach-agent-breakdown">
+                    <span>{metrics.newOver24} first reply</span>
+                    <span>{metrics.backlogOver48} re-contact</span>
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+
           <div className="table-controls">
-            <div className="segmented-control" aria-label="Filter tickets">
-              {(["all", "new", "backlog", "breached"] as Filter[]).map(
-                (option) => (
+            <div className="segmented-control" aria-label="Coaching focus">
+              {coachingFilterOptions.map((option) => (
                   <button
-                    key={option}
+                    key={option.key}
                     type="button"
-                    className={filter === option ? "active" : ""}
-                    onClick={() => setFilter(option)}
+                    className={filter === option.key ? "active" : ""}
+                    onClick={() => setFilter(option.key)}
                   >
-                    {option === "breached"
-                      ? "Over target"
-                      : option.charAt(0).toUpperCase() + option.slice(1)}
+                    {option.label}
+                    <span>{coachingCounts[option.key]}</span>
                   </button>
-                ),
-              )}
+                ))}
             </div>
 
             <label className="search-field">
@@ -787,17 +1284,21 @@ export default function Home() {
                 <tr>
                   <th scope="col">Agent</th>
                   <th scope="col">Ticket</th>
+                  <th scope="col">Coaching focus</th>
                   <th scope="col">Queue state</th>
-                  <th scope="col">Waiting</th>
-                  <th scope="col">First reply</th>
+                  <th scope="col">Customer wait</th>
                   <th scope="col">Last activity</th>
                 </tr>
               </thead>
               <tbody>
                 {filteredTickets.map((ticket) => {
                   const bucket = bucketCopy(ticket.bucket);
+                  const coaching = coachingCopy(ticket);
                   return (
-                    <tr key={`${ticket.assigneeId}-${ticket.id}`}>
+                    <tr
+                      className={`coaching-row coaching-row-${coaching.tone}`}
+                      key={`${ticket.assigneeId}-${ticket.id}`}
+                    >
                       <td>
                         <strong className="table-agent-name">{ticket.agentName}</strong>
                         <span className="cell-note">ID {ticket.assigneeId}</span>
@@ -816,6 +1317,12 @@ export default function Home() {
                         ) : null}
                       </td>
                       <td>
+                        <div className={`coaching-focus coaching-focus-${coaching.tone}`}>
+                          <strong>{coaching.focus}</strong>
+                          <span>{coaching.action}</span>
+                        </div>
+                      </td>
+                      <td>
                         <span className={`bucket bucket-${bucket.tone}`}>
                           {bucket.label}
                         </span>
@@ -828,14 +1335,6 @@ export default function Home() {
                           {ticket.isWaiting ? "Customer waiting" : "No reply due"}
                         </span>
                       </td>
-                      <td>
-                        <span>{formatDate(ticket.firstReplyAt)}</span>
-                        <span className="cell-note">
-                          {ticket.firstResponseHours === null
-                            ? "No first reply"
-                            : `${formatHours(ticket.firstResponseHours)} response`}
-                        </span>
-                      </td>
                       <td>{formatDate(ticket.lastActivityAt)}</td>
                     </tr>
                   );
@@ -845,7 +1344,9 @@ export default function Home() {
 
             {!loading && filteredTickets.length === 0 ? (
               <div className="empty-state">
-                No tickets match the selected filters.
+                {filter === "coaching"
+                  ? "No tickets currently need manager intervention."
+                  : "No tickets match the selected coaching filters."}
               </div>
             ) : null}
           </div>

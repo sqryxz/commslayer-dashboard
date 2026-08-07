@@ -1,6 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createDemoDashboard } from "@/app/lib/demo.mjs";
-import { getHistorySummary } from "@/app/lib/history";
+import {
+  getHistorySummary,
+  persistDashboardSnapshot,
+} from "@/app/lib/history";
 import { readFileSync, existsSync } from "fs";
 import { join } from "path";
 
@@ -16,6 +19,16 @@ const globalCache = globalThis as typeof globalThis & {
 };
 
 const CACHE_FILE = join(process.cwd(), ".cache", "dashboard.json");
+const RESOLUTIONS_FILE = join(process.cwd(), ".cache", "resolutions.json");
+const SNAPSHOT_METRIC_KEYS = [
+  "newTotal",
+  "newUnder24",
+  "newOver24",
+  "backlogTotal",
+  "backlogOver48",
+  "totalActive",
+  "unclassified",
+] as const;
 
 function envNumber(name: string, fallback: number) {
   const value = Number(process.env[name]);
@@ -58,7 +71,7 @@ async function loadHistory() {
   } catch (error) {
     return {
       status: "unavailable" as const,
-      storage: "local-d1" as const,
+      storage: "local-json" as const,
       detail:
         error instanceof Error
           ? error.message
@@ -80,6 +93,73 @@ function readCacheFile(): unknown | null {
   } catch {
     return null;
   }
+}
+
+type ResolutionRow = {
+  date: string;
+  total: number;
+  mari: number;
+  michael: number;
+  gian: number;
+  unassigned: number;
+};
+
+function readResolutions(): ResolutionRow[] {
+  try {
+    if (!existsSync(RESOLUTIONS_FILE)) return [];
+    const raw = readFileSync(RESOLUTIONS_FILE, "utf-8");
+    const parsed = JSON.parse(raw);
+    const rows = Array.isArray(parsed?.rows) ? parsed.rows : [];
+    return rows.slice(-14);
+  } catch {
+    return [];
+  }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+function isPersistableAgents(
+  value: unknown,
+): value is Parameters<typeof persistDashboardSnapshot>[0] {
+  return (
+    Array.isArray(value) &&
+    value.every(
+      (item) =>
+        isRecord(item) &&
+        isRecord(item.agent) &&
+        typeof item.agent.name === "string" &&
+        (typeof item.agent.assigneeId === "string" ||
+          typeof item.agent.assigneeId === "number") &&
+        isRecord(item.metrics) &&
+        SNAPSHOT_METRIC_KEYS.every(
+          (metricKey) => typeof item.metrics[metricKey] === "number",
+        ),
+    )
+  );
+}
+
+async function prepareCachedDashboard(fileData: unknown) {
+  if (!isRecord(fileData)) return fileData;
+
+  if (
+    fileData.source === "live" &&
+    typeof fileData.refreshedAt === "string" &&
+    isPersistableAgents(fileData.agents)
+  ) {
+    try {
+      await persistDashboardSnapshot(fileData.agents, fileData.refreshedAt);
+    } catch {
+      // History failures must not block the live queue from loading.
+    }
+  }
+
+  return {
+    ...fileData,
+    history: await loadHistory(),
+    resolutions: readResolutions(),
+  };
 }
 
 export async function GET(request: NextRequest) {
@@ -108,12 +188,13 @@ export async function GET(request: NextRequest) {
   if (forceRefresh) {
     const fileData = readCacheFile();
     if (fileData) {
+      const dashboard = await prepareCachedDashboard(fileData);
       const cacheSeconds = envNumber("COMMSLAYER_CACHE_SECONDS", 21600);
       globalCache.__commslayerDashboardCache = {
         expiresAt: now + cacheSeconds * 1000,
-        value: fileData,
+        value: dashboard,
       };
-      return NextResponse.json(fileData, {
+      return NextResponse.json(dashboard, {
         headers: noStoreHeaders(),
       });
     }
@@ -129,12 +210,13 @@ export async function GET(request: NextRequest) {
   // Read the cache file written by the external Python warmer.
   const fileData = readCacheFile();
   if (fileData) {
+    const dashboard = await prepareCachedDashboard(fileData);
     const cacheSeconds = envNumber("COMMSLAYER_CACHE_SECONDS", 21600);
     globalCache.__commslayerDashboardCache = {
       expiresAt: now + cacheSeconds * 1000,
-      value: fileData,
+      value: dashboard,
     };
-    return NextResponse.json(fileData, {
+    return NextResponse.json(dashboard, {
       headers: noStoreHeaders(),
     });
   }
