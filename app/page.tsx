@@ -585,20 +585,6 @@ function DailyHistoryChart({
     (days.length === 1 ? plotWidth / 2 : (i / (days.length - 1)) * plotWidth);
   const y = (v: number) => padding.top + plotHeight - (v / maximum) * plotHeight;
 
-  // Linear regression for total trendline
-  const n = days.length;
-  const totalRegression = (() => {
-    if (n < 2) return null;
-    const xs = days.map((_, i) => i);
-    const sumX = xs.reduce((a, b) => a + b, 0);
-    const sumY = totalValues.reduce((a, b) => a + b, 0);
-    const sumXY = xs.reduce((acc, xi, i) => acc + xi * totalValues[i], 0);
-    const sumX2 = xs.reduce((acc, xi) => acc + xi * xi, 0);
-    const slope = (n * sumXY - sumX * sumY) / (n * sumX2 - sumX * sumX);
-    const intercept = (sumY - slope * sumX) / n;
-    return { slope, intercept };
-  })();
-
   const dayFormatter = new Intl.DateTimeFormat("en-AU", {
     day: "numeric",
     month: "short",
@@ -614,8 +600,8 @@ function DailyHistoryChart({
           </span>
         ))}
         <span>
-          <i style={{ background: "var(--text-dim)", opacity: 0.6 }} />
-          Total trend
+          <i style={{ background: "var(--text-dim)", opacity: 0.8 }} />
+          Total
         </span>
       </div>
       <svg
@@ -645,18 +631,36 @@ function DailyHistoryChart({
           </text>
         ))}
 
-        {/* Total trendline */}
-        {totalRegression && (
-          <line
-            x1={x(0)}
-            y1={y(totalRegression.intercept)}
-            x2={x(n - 1)}
-            y2={y(totalRegression.intercept + totalRegression.slope * (n - 1))}
-            stroke="var(--text-dim)"
-            strokeWidth="2"
-            strokeDasharray="6 4"
-            opacity={0.5}
-          />
+        {/* Total line — actual sum of all agents per day */}
+        {totalValues.length > 1 && (
+          <g>
+            <polyline
+              points={totalValues.map((v, i) => `${x(i)},${y(v)}`).join(" ")}
+              fill="none"
+              stroke="var(--text-dim)"
+              strokeWidth="2.5"
+              strokeDasharray="6 4"
+              opacity={0.8}
+              strokeLinejoin="round"
+              strokeLinecap="round"
+            />
+            {totalValues.map((v, i) => (
+              <circle
+                key={`total-${days[i].snapshotDate}`}
+                cx={x(i)}
+                cy={y(v)}
+                r="3.5"
+                fill="var(--off-white)"
+                stroke="var(--text-dim)"
+                strokeWidth="2.5"
+                opacity={0.8}
+              >
+                <title>
+                  Total, {dayFormatter.format(new Date(days[i].snapshotDate + "T00:00:00.000Z"))}: {v}
+                </title>
+              </circle>
+            ))}
+          </g>
         )}
 
         {/* Agent lines */}
