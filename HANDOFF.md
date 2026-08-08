@@ -5,7 +5,18 @@
 **URL:** https://cx.xbtseal.com (Cloudflare Tunnel → localhost:3004)
 **Path:** `~/Dropbox/DWA/DWA-Brain/Commslayer Dashboard/`
 **Stack:** Vinext (Next.js fork) + React + TypeScript, Python cache warmer, Cloudflare Tunnel
-**Purpose:** Operations dashboard for a 3-agent customer support team (Mari, Michael, Gian) using Commslayer (a helpdesk tool). Shows queue metrics, coaching priorities, and historical trends.
+**Purpose:** Operations dashboard for a customer support team using Commslayer (a helpdesk tool). Shows queue metrics, ticket flow (inflow → AI resolution → human resolution), coaching priorities, and historical trends.
+
+**Agents tracked:**
+
+| Name | Role | Assignee ID | Chart Color |
+|------|------|-------------|-------------|
+| Sarah | AI bot (auto-assigned to all conversations first) | null (unassigned) | `#22c55e` (green) |
+| Mari | Human CX agent | 10116 | `#26b2dd` (blue) |
+| Michael | Human CX agent | 10207 | `#d3aa22` (gold) |
+| Gian | Human CX agent | 8720 | `#d96e5f` (red) |
+
+**Sarah flow:** Every incoming conversation is auto-assigned to Sarah first. She either resolves it (ticket stays `assignee_id=null`, marked "resolved by Auto-labels") or escalates it (activity: "removed from the conversation: no matching guidance detected") and a human agent takes over.
 
 ## API: Commslayer
 
@@ -18,8 +29,7 @@ Rate limit: ~1 request/second, 429 with `retry-after` header
 | Endpoint | Filters | Purpose |
 |----------|---------|---------|
 | `GET /conversations` | `filter[assignee_id]`, `filter[status]=open` | Fetch open conversations per agent |
-| `GET /conversations` | `filter[status]=resolved` | Fetch resolved conversations (clearance rate) |
-| `GET /conversations` | `filter[assignee_id]` (no status filter) | All conversations per agent (inflow data) |
+| `GET /conversations` | `filter[status]=resolved` | Fetch resolved conversations (resolution + inflow data) |
 | `GET /conversations/{id}/messages` | — | Message history for classification |
 
 ### Conversation object shape
@@ -67,6 +77,7 @@ warm-cache.py (Python)
 .cache/dashboard.json    (live ticket data: 700+ conversations)
 .cache/history.json      (daily snapshots: metrics per agent per day, 400-day retention)
 .cache/resolutions.json  (daily resolution counts per agent, 400-day retention)
+.cache/inflow.json       (daily inflow counts per agent, 400-day retention)
     ↓ read by
 app/api/dashboard/route.ts (Next.js API route)
     ↓ serves JSON to
@@ -81,15 +92,16 @@ Cloudflare Tunnel → cx.xbtseal.com
 
 | File | Role |
 |------|------|
-| `scripts/warm-cache.py` | Cache warmer — fetches API, classifies tickets, writes cache files. Runs via `launchd com.dwa.commslayer-warmer` every 3 hours. |
-| `app/api/dashboard/route.ts` | API route — reads cache files, serves combined JSON payload. |
-| `app/page.tsx` | Main frontend (~1300 lines) — all UI components, SVG charts, ticket tables. |
+| `scripts/warm-cache.py` | Cache warmer — fetches API, classifies tickets, writes cache files (dashboard, resolutions, inflow). Runs via `launchd com.dwa.commslayer-warmer` every 3 hours. |
+| `app/api/dashboard/route.ts` | API route — reads cache files, serves combined JSON payload (dashboard + history + resolutions + inflow). |
+| `app/page.tsx` | Main frontend (~1700 lines) — all UI components, SVG charts, ticket tables. |
 | `app/lib/history.ts` | History persistence — manages `history.json` snapshots, weekly aggregation. |
 | `app/lib/commslayer.mjs` | API client (JS) — paginated fetch, rate limiter, queue fetcher. |
 | `.env.local` | Secrets — API token, assignee IDs, agent names. |
 | `.cache/dashboard.json` | Live snapshot cache (~750KB, 700+ tickets). |
-| `.cache/history.json` | Daily metric snapshots (10KB, 27 rows, Jul 28 → present). |
-| `.cache/resolutions.json` | Daily resolution counts (2KB, 15 rows, Jul 24 → present). |
+| `.cache/history.json` | Daily metric snapshots (12KB, growing daily). |
+| `.cache/resolutions.json` | Daily resolution counts by agent (2KB, 15 rows, Jul 24 → present). |
+| `.cache/inflow.json` | Daily inflow counts by agent (1KB, 14 rows, Jul 26 → present). |
 
 ### Build & Deploy
 
@@ -120,53 +132,56 @@ Cloudflare Tunnel auto-reconnects. No restart needed for tunnel.
 ### 2. Added Clearance Rate chart (daily resolutions)
 
 **Added:** `ResolutionChart` component — stacked bar chart showing daily resolutions by agent:
-- Stacked bars: Mari / Michael / Gian / Unassigned (gray)
+- Stacked bars: Mari (blue) / Michael (gold) / Gian (red) / **Sarah (AI)** (green)
 - 7-day rolling average line (dashed green)
-- Summary stats: Latest count, 7-day avg, tracked-agent total
+- **Click any bar** to see a per-agent percentage breakdown panel
+- Non-selected bars dim to 35% opacity when one is selected
+- Summary stats: Latest count, 7-day avg, Sarah (AI) count
+- Tooltips show percentages: "Mari, 6 Aug: 65 (36%)"
+
+**"Unassigned" = Sarah (AI):** The unassigned bucket in the API represents tickets Sarah resolved end-to-end without human escalation. Labeled "Sarah (AI)" in green on the dashboard.
+
+### 3. Added Ticket Flow chart (end-to-end pipeline)
+
+**Added:** `TicketFlowChart` component — dual-bar chart showing the complete ticket lifecycle per day:
+- **Left bar (purple):** Inflow — tickets entering the queue (`created_at` date)
+- **Right bar (stacked):** Resolutions — Sarah (AI, green) / Mari (blue) / Michael (gold) / Gian (red)
+- Summary stats: avg inflow/day, Sarah resolve rate %, human resolve avg/day
+- Collapsible "How each stage is calculated" legend below the chart
 
 **Backend changes:**
-- `warm-cache.py`: Added `fetch_resolved_counts()` — paginates `filter[status]=resolved` conversations, groups by date + assignee, writes to `.cache/resolutions.json` (400-day retention, merge strategy = newest wins)
-- `app/api/dashboard/route.ts`: Added `readResolutions()` — reads `.cache/resolutions.json`, returns last 14 days in the API payload as `resolutions` field
+- `warm-cache.py`: Added `fetch_inflow_counts()` — paginates resolved conversations, groups by `created_at` date + final assignee (sarah/mari/michael/gian/other), writes to `.cache/inflow.json` (400-day retention, merge strategy = newest wins)
+- `app/api/dashboard/route.ts`: Added `readInflow()` + `InflowRow` type — serves last 14 days as `inflow[]` in payload
 
-### 3. Pending: Queue inflow data
+**Data semantics:**
+- Inflow = all conversations created that day (by `created_at`). Every ticket enters through Sarah first.
+- Sarah resolved = resolved conversations where `assignee_id` is null. Sarah handled it without escalating.
+- Agent resolved = resolved conversations where `assignee_id` matches that human agent. Sarah escalated these ("removed: no matching guidance detected").
+- Inflow and resolution are grouped by different date fields (`created_at` vs `updated_at`), so they don't match on any single day. Over 7-day windows they roughly balance.
 
-**Explored but NOT yet integrated into the dashboard.** We discovered the API can provide daily inflow (tickets entering each agent's queue by `created_at` date). Key findings:
+### 4. Collapsible methodology legend
 
-```
-Daily Inflow vs Resolved (recent):
-Date         Inflow  Resolved  Gap
-Jul 28         123      178     -55  (cleared more)
-Aug 3          232      184     +48  (big spike, backlog grew)
-Aug 6          188      180      +8  (roughly balanced)
-Aug 7          130      215     -85  (cleared more than came in)
-```
-
-**Implementation needed:**
-- Add inflow fetching to `warm-cache.py` (fetch all conversations per agent, group by `created_at` date)
-- Store in `.cache/inflow.json` (same pattern as resolutions)
-- Serve via API route
-- Add to frontend (either as side-by-side bars in the resolution chart, or a separate section)
-
-**Consideration:** Fetching inflow requires paginating ALL conversations per agent (not just open or resolved). This is ~900 conversations per agent for 14 days = ~27 API pages at 1.1s each = ~30s per agent. The warmer already takes several minutes; this adds ~90s.
+Below the Ticket Flow chart, a `<details>` panel explains how each stage is calculated, the Sarah flow model, why inflow ≠ resolutions on a single day, and the data source. Uses color-coded labels matching the chart legend.
 
 ## Data Insights (as of Aug 8)
 
 ### Queue state
-- **619 active tickets** across 3 agents
-- **Mari:** 281 active (183 need coaching), 18 unclassified
-- **Michael:** 336 active (205 need coaching), 36 unclassified
+- **664 active tickets** across 3 agents
+- **Mari:** 281 active, 18 unclassified
+- **Michael:** 336 active, 36 unclassified
 - **Gian:** 2 active (minimal activity)
 
 ### Resolution trends
-- 7-day rolling average: **147/day** (up from 104/day two weeks ago)
-- Mari: ~65/day, trending up (hit 100 on Aug 7)
+- 7-day rolling average: **139/day** (up from 104/day two weeks ago)
+- Sarah (AI): ~47/day, resolving **54%** of inflow
+- Mari: ~65/day, trending up (hit 91 on Aug 7)
 - Michael: ~49/day, steady
-- Unassigned/bot resolutions: ~50/day (30-40% of total)
 
 ### Inflow vs clearance
-- Roughly balanced on normal days (~130-200/day each)
-- Inflow spikes (Aug 3: 232 tickets) create multi-day backlog
-- Aug 1-2 show low inflow AND low resolutions (possibly weekend)
+- Avg inflow: **87 tickets/day** (7-day avg)
+- Roughly balanced with resolutions on normal days
+- Inflow spikes (Aug 3: 175 tickets) create multi-day backlog
+- Aug 1-2 show low inflow AND low resolutions (weekend)
 
 ## Key Decisions & Constraints
 
@@ -197,7 +212,8 @@ If moving to a standalone GitHub repo:
 
 ## Open Questions for Next Session
 
-1. **Inflow chart integration** — should inflow be side-by-side bars with resolutions, a separate chart, or a combined "net queue change" visualization?
-2. **Weekend detection** — Aug 1-2 show very low activity. Should charts annotate weekends differently?
-3. **Backlog aging** — can we show how long the oldest ticket in each agent's backlog has been waiting? (Data is available in `hoursWaiting` field on tickets)
-4. **Clearance rate target line** — should we add a horizontal target line on the resolution chart (e.g., target: 200/day)?
+1. **Weekend detection** — Aug 1-2 show very low activity. Should charts annotate weekends differently?
+2. **Backlog aging** — can we show how long the oldest ticket in each agent's backlog has been waiting? (Data is available in `hoursWaiting` field on tickets)
+3. **Clearance rate target line** — should we add a horizontal target line on the resolution chart (e.g., target: 200/day)?
+4. **Sarah escalation tracking** — currently we know Sarah's total resolutions but not her escalation rate (how many tickets she removes herself from vs auto-resolves). Could be computed by paginating messages for activity events, but would add significant API calls.
+5. **Inflow vs resolution net chart** — could add a third element showing net queue delta (inflow − resolutions) as a line or area chart overlay.

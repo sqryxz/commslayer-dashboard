@@ -189,9 +189,67 @@ activity >48h. The "last activity >48h" filter is additional.
 
 ### Data freshness
 
-Our dashboard is a snapshot taken every 6 hours (00:00, 06:00, 12:00, 18:00
-HKT). Commslayer's internal views are real-time. Ticket counts will differ
-based on when each was viewed.
+Our dashboard is a snapshot taken every 3 hours (00:00, 03:00, 06:00, 09:00,
+12:00, 15:00, 18:00, 21:00 HKT). Commslayer's internal views are real-time.
+Ticket counts will differ based on when each was viewed.
+
+## Ticket flow metrics
+
+### Inflow (`inflow.json`)
+
+```
+Count of conversations where:
+  status = resolved
+  AND created_at falls on that date
+```
+
+Every conversation enters the queue through Sarah (AI) first, so inflow
+equals total daily ticket volume. Grouped by `created_at` date (UTC, first
+10 characters of ISO timestamp).
+
+Split by final assignee to show routing:
+- `sarah` = final `assignee_id` is null (Sarah resolved it)
+- `mari` / `michael` / `gian` = final `assignee_id` matches that agent
+- `other` = any other `assignee_id` (e.g. Manilyn, 13345)
+
+### Resolution (`resolutions.json`)
+
+```
+Count of conversations where:
+  status = resolved
+  AND updated_at falls on that date
+```
+
+The API has no `resolved_at` field. `updated_at` is the best proxy for
+resolution date (it's set to the last status change). Grouped by `updated_at`
+date.
+
+Split by final assignee:
+- `unassigned` (= Sarah AI resolved) — final `assignee_id` is null
+- `mari` / `michael` / `gian` — matches that agent's ID
+
+On the dashboard, `unassigned` is labeled **"Sarah (AI)"** in green.
+
+### Why inflow ≠ resolutions on any single day
+
+Inflow uses `created_at` (when the ticket entered the queue). Resolutions use
+`updated_at` (when it was resolved). A ticket created Monday may be resolved
+Wednesday — it appears in Monday's inflow but Wednesday's resolutions. Over
+7-day windows they roughly balance (~130–200/day each).
+
+### Sarah (AI) flow model
+
+```
+Every incoming conversation
+    → Sarah auto-assigned ("Sarah was automatically assigned to this conversation")
+    → Either:
+        a) Sarah resolves it → assignee_id stays null → counted as "Sarah (AI)" resolution
+        b) Sarah escalates → "Sarah was removed from the conversation: no matching guidance detected"
+           → human agent takes over → conversation gets assignee_id → counted under that agent's resolutions
+```
+
+Sarah has no `assignee_id` in the API — she appears only in activity messages.
+There is no `/agents` or `/users` endpoint to look her up.
 
 ## Historical snapshots
 

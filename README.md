@@ -1,20 +1,19 @@
 # Commslayer Dashboard
 
-A local Dr. Woof CX scorecard for comparing three Commslayer agents: Mari,
-Michael and Gian.
+A local Dr. Woof CX operations dashboard showing ticket flow, queue metrics,
+and coaching priorities for a support team using Commslayer.
 
-The dashboard shows one scorecard column per agent with:
+The dashboard shows:
 
-- total active tickets;
-- total new tickets;
-- new tickets waiting less than 24 hours for their first reply;
-- new tickets waiting 24 hours or more for their first reply;
-- total backlog tickets; and
-- backlog tickets with an unanswered customer message at least 48 hours old.
+- **Ticket flow chart** — daily inflow (tickets entering queue) vs resolutions by Sarah (AI) and human agents (Mari, Michael, Gian), with a collapsible methodology legend
+- **Agent scorecards** — per-agent queue metrics (new, backlog, waiting times)
+- **Daily resolutions** — stacked bar chart by agent with click-to-reveal percentage breakdowns
+- **10-day queue history** — daily snapshots with trend lines
+- **Coaching queue** — ticket-level table filtered by urgency
 
-The combined ticket table includes the assigned agent, queue state, waiting
-time, first reply, and last activity. Each agent also has an independent
-reconciliation check proving `new + backlog = active`.
+**Sarah (AI):** Every conversation is auto-assigned to Sarah first. She either
+resolves it (stays unassigned) or escalates to a human agent. The dashboard
+labels these as "Sarah (AI)" resolutions in green.
 
 The app runs on a local Mac Mini and is served via Cloudflare Tunnel at
 `https://cx.xbtseal.com`. The Commslayer token is used only by the
@@ -25,21 +24,28 @@ external Python warmer script and never reaches the browser.
 ```
 launchd (every 3h) → python3 scripts/warm-cache.py → Commslayer API
                                                          ↓
-                                                  .cache/dashboard.json
+                                            .cache/dashboard.json
+                                            .cache/resolutions.json
+                                            .cache/inflow.json
                                                          ↓
-Browser → Vinext server (:3004) → read file → serve JSON → React renders
+Browser → Vinext server (:3004) → read files → serve JSON → React renders
 ```
 
-The Vinext server never calls the Commslayer API. It reads the cache file
+The Vinext server never calls the Commslayer API. It reads cache files
 written by the external Python warmer. This avoids the Vinext/Worker runtime
-request timeout that kills long-running synchronous fetches (~5 min for 260
+request timeout that kills long-running synchronous fetches (~5 min for 700+
 tickets).
 
 ### Cache warmer
 
 `scripts/warm-cache.py` fetches all open conversations and messages directly
-from the Commslayer API, classifies each ticket (mirroring `metrics.mjs`
-logic), and writes the result to `.cache/dashboard.json`.
+from the Commslayer API, classifies each ticket, and writes results to:
+
+- `.cache/dashboard.json` — live ticket data (700+ conversations, ~750KB)
+- `.cache/resolutions.json` — daily resolution counts by agent (400-day retention)
+- `.cache/inflow.json` — daily inflow counts by agent (400-day retention)
+
+Then calls the local dashboard refresh endpoint to persist a daily snapshot.
 
 Scheduled by launchd at **every 3 hours** (00:00, 03:00, 06:00, 09:00, 12:00,
 15:00, 18:00, 21:00 HKT). Also runs on boot via `RunAtLoad`.
@@ -285,6 +291,8 @@ tests/
 .cache/
   dashboard.json           Live data cache (written by warmer, read by server)
   history.json             Aggregate daily history (no customer content)
+  resolutions.json         Daily resolution counts by agent
+  inflow.json              Daily inflow counts by agent (tickets entering queue)
 .env.example               Safe configuration template
 .env.local                 Real token + agent IDs (gitignored)
 wrangler.migrations.jsonc  Local D1 migration configuration
