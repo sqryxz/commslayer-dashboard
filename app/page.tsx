@@ -1505,6 +1505,80 @@ export default function Home() {
               inflow={dashboard.inflow}
               resolutions={dashboard.resolutions}
             />
+            <details
+              style={{
+                marginTop: 12,
+                padding: "12px 16px",
+                border: "1px solid var(--border)",
+                borderRadius: 6,
+                background: "var(--surface-elevated, var(--surface, #111))",
+                fontSize: 13,
+                lineHeight: 1.7,
+                color: "var(--text-muted)",
+              }}
+            >
+              <summary
+                style={{ cursor: "pointer", fontWeight: 600, color: "var(--text)" }}
+              >
+                How each stage is calculated
+              </summary>
+              <dl style={{ marginTop: 10, marginBottom: 0, display: "grid", gap: 10 }}>
+                <div>
+                  <dt style={{ fontWeight: 600, color: "#8b5cf6", display: "inline" }}>
+                    Inflow
+                  </dt>
+                  <dd style={{ display: "inline", marginLeft: 6 }}>
+                    All conversations created that day (by <code>created_at</code> date).
+                    Every ticket enters the queue through Sarah first, so this equals total
+                    daily ticket volume. Includes both open and already-resolved tickets.
+                  </dd>
+                </div>
+                <div>
+                  <dt style={{ fontWeight: 600, color: "#22c55e", display: "inline" }}>
+                    Sarah resolved (AI)
+                  </dt>
+                  <dd style={{ display: "inline", marginLeft: 6 }}>
+                    Resolved conversations where the final <code>assignee_id</code> is null.
+                    Sarah is the AI bot auto-assigned to every conversation. If she handles
+                    it end-to-end (e.g. auto-labels, replies, or detects no response needed),
+                    the ticket stays unassigned. She then marks it resolved.
+                  </dd>
+                </div>
+                <div>
+                  <dt style={{ fontWeight: 600, color: "#26b2dd", display: "inline" }}>
+                    Mari / Michael / Gian resolved
+                  </dt>
+                  <dd style={{ display: "inline", marginLeft: 6 }}>
+                    Resolved conversations where the final <code>assignee_id</code> matches
+                    that human agent. These are tickets Sarah escalated — she was
+                    {" "}<em>removed from the conversation: no matching guidance detected</em>
+                    {" "}— and a human took over. Counted by <code>updated_at</code> date
+                    (proxy for resolution date, since the API has no <code>resolved_at</code>{" "}
+                    field).
+                  </dd>
+                </div>
+                <div>
+                  <dt style={{ fontWeight: 600, color: "var(--text-dim)", display: "inline" }}>
+                    Inflow vs resolution mismatch
+                  </dt>
+                  <dd style={{ display: "inline", marginLeft: 6 }}>
+                    Inflow and resolution counts are grouped by different dates
+                    (<code>created_at</code> vs <code>updated_at</code>), so they won't match
+                    on any single day. A ticket created Monday may be resolved Wednesday.
+                    Over 7-day windows they roughly balance (~130–200/day each).
+                  </dd>
+                </div>
+                <div>
+                  <dt style={{ fontWeight: 600, color: "var(--text-dim)", display: "inline" }}>
+                    Data source
+                  </dt>
+                  <dd style={{ display: "inline", marginLeft: 6 }}>
+                    Commslayer API <code>/conversations?filter[status]=resolved</code>,
+                    refreshed every 3 hours by the cache warmer. 14-day rolling window.
+                  </dd>
+                </div>
+              </dl>
+            </details>
           </section>
         ) : null}
 
