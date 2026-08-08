@@ -319,6 +319,101 @@ def fetch_resolved_counts(token, api_base):
 
 
 RESOLUTIONS_FILE = os.path.join(PROJECT_DIR, ".cache", "resolutions.json")
+INFLOW_FILE = os.path.join(PROJECT_DIR, ".cache", "inflow.json")
+
+
+def fetch_inflow_counts(token, api_base):
+    """Fetch daily ticket inflow by grouping resolved conversations by created_at date.
+
+    Since every conversation goes through Sarah first, inflow = all conversations
+    created that day (regardless of final assignee). We fetch resolved conversations
+    (which is the bulk) and group by created_at date. This gives us the number of
+    tickets entering the queue each day.
+
+    The resolved endpoint also includes the final assignee, so we can split inflow
+    by whether it was ultimately resolved by Sarah (unassigned) or a human agent.
+    """
+    from datetime import timedelta
+    cutoff = datetime.now(timezone.utc) - timedelta(days=14)
+    cutoff_str = cutoff.strftime("%Y-%m-%d")
+
+    # Reuse already-fetched resolved conversations to avoid double API calls
+    # This function is called right after fetch_resolved_counts, so we do a
+    # separate lightweight pass here for inflow by created_at
+    inflow_convs = []
+    cursor = None
+    for _ in range(100):
+        params = {"filter[status]": "resolved", "page[limit]": "100"}
+        if cursor:
+            params["page[after]"] = cursor
+        url = f"{api_base}/conversations?{urllib.parse.urlencode(params)}"
+        payload = api_request(url, token)
+        records = payload.get("data", [])
+        stopped = False
+        for rec in records:
+            attrs = rec.get("attributes", rec)
+            created = attrs.get("created_at", "")
+            if created:
+                rec_date = created[:10]
+                if rec_date >= cutoff_str:
+                    inflow_convs.append(rec)
+                else:
+                    stopped = True
+        cursor = payload.get("meta", {}).get("next_cursor")
+        if not cursor or stopped:
+            break
+
+    log(f"  Fetched {len(inflow_convs)} conversations for inflow (last 14 days)")
+
+    # Group by created_at date + final assignee
+    by_date = {}
+    for rec in inflow_convs:
+        attrs = rec.get("attributes", rec)
+        created = attrs.get("created_at", "")
+        if not created:
+            continue
+        date = created[:10]
+        assignee = str(attrs.get("assignee_id", ""))
+        if date not in by_date:
+            by_date[date] = {"total": 0, "sarah": 0, "mari": 0, "michael": 0, "gian": 0, "other": 0}
+        by_date[date]["total"] += 1
+        if assignee in ("", "None", "null"):
+            by_date[date]["sarah"] += 1
+        elif assignee == "10116":
+            by_date[date]["mari"] += 1
+        elif assignee == "10207":
+            by_date[date]["michael"] += 1
+        elif assignee == "8720":
+            by_date[date]["gian"] += 1
+        else:
+            by_date[date]["other"] += 1
+
+    return by_date
+
+
+def load_inflow_history():
+    try:
+        with open(INFLOW_FILE) as f:
+            return json.load(f)
+    except Exception:
+        return {"version": 1, "rows": []}
+
+
+def merge_inflow_data(existing, new_data):
+    merged = {r["date"]: r for r in existing.get("rows", [])}
+    for date, counts in new_data.items():
+        merged[date] = {
+            "date": date,
+            "total": counts["total"],
+            "sarah": counts["sarah"],
+            "mari": counts["mari"],
+            "michael": counts["michael"],
+            "gian": counts["gian"],
+            "other": counts["other"],
+        }
+    rows = sorted(merged.values(), key=lambda r: r["date"])
+    rows = rows[-400:]
+    return {"version": 1, "rows": rows}
 
 
 def load_resolution_history():
@@ -437,6 +532,20 @@ def main():
     except Exception as e:
         log(f"  Resolutions fetch failed: {e}")
         payload["resolutions"] = []
+
+    # Fetch daily inflow (tickets entering queue by created_at date)
+    log("  Fetching inflow counts...")
+    try:
+        inflow_counts = fetch_inflow_counts(token, api_base)
+        existing_inflow = load_inflow_history()
+        merged_inflow = merge_inflow_data(existing_inflow, inflow_counts)
+        with open(INFLOW_FILE, "w") as f:
+            json.dump(merged_inflow, f, indent=2)
+        log(f"  Inflow saved: {len(merged_inflow['rows'])} days")
+        payload["inflow"] = merged_inflow["rows"][-14:]
+    except Exception as e:
+        log(f"  Inflow fetch failed: {e}")
+        payload["inflow"] = []
 
     # Write cache file
     os.makedirs(os.path.dirname(CACHE_PATH), exist_ok=True)

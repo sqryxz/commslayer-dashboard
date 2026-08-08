@@ -116,6 +116,7 @@ type DashboardPayload = {
   notice: string | null;
   history: HistorySummary;
   resolutions?: ResolutionRow[];
+  inflow?: InflowRow[];
 };
 
 type ResolutionRow = {
@@ -125,6 +126,16 @@ type ResolutionRow = {
   michael: number;
   gian: number;
   unassigned: number;
+};
+
+type InflowRow = {
+  date: string;
+  total: number;
+  sarah: number;
+  mari: number;
+  michael: number;
+  gian: number;
+  other: number;
 };
 
 type Filter = "coaching" | "first-reply" | "re-contact" | "all";
@@ -738,6 +749,244 @@ function DailyHistorySection({
   );
 }
 
+function TicketFlowChart({
+  inflow,
+  resolutions,
+}: {
+  inflow: InflowRow[];
+  resolutions: ResolutionRow[];
+}) {
+  // Merge inflow and resolution data by date
+  const inflowDays = inflow.slice(-14);
+  const resDays = resolutions.slice(-14);
+
+  // Build merged date list
+  const allDates = Array.from(
+    new Set([...inflowDays.map((d) => d.date), ...resDays.map((d) => d.date)]),
+  )
+    .sort()
+    .slice(-14);
+
+  const merged = allDates.map((date) => {
+    const inf = inflowDays.find((d) => d.date === date);
+    const res = resDays.find((d) => d.date === date);
+    return {
+      date,
+      inflow: inf?.total ?? 0,
+      sarahInflow: inf?.sarah ?? 0,
+      humanInflow: (inf?.mari ?? 0) + (inf?.michael ?? 0) + (inf?.gian ?? 0) + (inf?.other ?? 0),
+      sarahResolved: res?.unassigned ?? 0,
+      mariResolved: res?.mari ?? 0,
+      michaelResolved: res?.michael ?? 0,
+      gianResolved: res?.gian ?? 0,
+      humanResolved: (res?.mari ?? 0) + (res?.michael ?? 0) + (res?.gian ?? 0),
+      totalResolved: res?.total ?? 0,
+    };
+  });
+
+  const width = 900;
+  const height = 320;
+  const padding = { top: 30, right: 30, bottom: 50, left: 55 };
+  const plotWidth = width - padding.left - padding.right;
+  const plotHeight = height - padding.top - padding.bottom;
+
+  const maximum = Math.max(1, ...merged.map((d) => Math.max(d.inflow, d.totalResolved)));
+  const barGroupWidth = plotWidth / Math.max(1, merged.length);
+  const barWidth = Math.max(12, barGroupWidth * 0.3);
+
+  const y = (v: number) => padding.top + plotHeight - (v / maximum) * plotHeight;
+  const xLeft = (i: number) =>
+    padding.left + i * barGroupWidth + barGroupWidth / 2 - barWidth - 4;
+  const xRight = (i: number) =>
+    padding.left + i * barGroupWidth + barGroupWidth / 2 + 4;
+
+  const dayFormatter = new Intl.DateTimeFormat("en-AU", { day: "numeric", month: "short" });
+
+  // Summary stats (last 7 days)
+  const recent = merged.slice(-7);
+  const avgInflow = Math.round(recent.reduce((s, d) => s + d.inflow, 0) / Math.max(1, recent.length));
+  const avgSarahResolved = Math.round(
+    recent.reduce((s, d) => s + d.sarahResolved, 0) / Math.max(1, recent.length),
+  );
+  const avgHumanResolved = Math.round(
+    recent.reduce((s, d) => s + d.humanResolved, 0) / Math.max(1, recent.length),
+  );
+  const sarahRate = avgInflow > 0 ? Math.round((avgSarahResolved / avgInflow) * 100) : 0;
+
+  return (
+    <div className="trend-chart-wrap">
+      {/* Legend */}
+      <div className="trend-legend" aria-label="Ticket flow legend">
+        <span>
+          <i style={{ background: "#8b5cf6" }} />
+          Inflow (tickets entered)
+        </span>
+        <span>
+          <i style={{ background: "#22c55e" }} />
+          Sarah resolved (AI)
+        </span>
+        <span>
+          <i style={{ background: "#26b2dd" }} />
+          Mari resolved
+        </span>
+        <span>
+          <i style={{ background: "#d3aa22" }} />
+          Michael resolved
+        </span>
+        <span>
+          <i style={{ background: "#d96e5f" }} />
+          Gian resolved
+        </span>
+      </div>
+
+      <svg
+        className="trend-chart"
+        viewBox={`0 0 ${width} ${height}`}
+        role="img"
+        aria-label="Daily ticket flow: inflow vs resolutions by agent"
+      >
+        {/* Grid */}
+        {[0, 0.25, 0.5, 0.75, 1].map((ratio) => {
+          const value = maximum * ratio;
+          const gridY = y(value);
+          return (
+            <g key={ratio}>
+              <line
+                x1={padding.left}
+                x2={width - padding.right}
+                y1={gridY}
+                y2={gridY}
+                className="trend-grid-line"
+              />
+              <text
+                x={padding.left - 12}
+                y={gridY + 4}
+                textAnchor="end"
+                className="trend-axis-label"
+              >
+                {Math.round(value)}
+              </text>
+            </g>
+          );
+        })}
+
+        {/* Inflow bars (left side, purple) */}
+        {merged.map((day, i) => (
+          <rect
+            key={`inf-${day.date}`}
+            x={xLeft(i)}
+            y={y(day.inflow)}
+            width={barWidth}
+            height={Math.max(0, padding.top + plotHeight - y(day.inflow))}
+            fill="#8b5cf6"
+            rx={2}
+            opacity={0.8}
+          >
+            <title>
+              Inflow · {dayFormatter.format(new Date(day.date + "T00:00:00.000Z"))}: {day.inflow} tickets entered
+            </title>
+          </rect>
+        ))}
+
+        {/* Resolution stacked bars (right side) */}
+        {merged.map((day, i) => {
+          let cumulative = 0;
+          const segments = [
+            { value: day.sarahResolved, color: "#22c55e", name: "Sarah (AI)" },
+            { value: day.mariResolved, color: "#26b2dd", name: "Mari" },
+            { value: day.michaelResolved, color: "#d3aa22", name: "Michael" },
+            { value: day.gianResolved, color: "#d96e5f", name: "Gian" },
+          ];
+          return (
+            <g key={`res-${day.date}`}>
+              {segments.map((seg) => {
+                const segHeight = (seg.value / maximum) * plotHeight;
+                const segY =
+                  padding.top + plotHeight - segHeight - (cumulative / maximum) * plotHeight;
+                cumulative += seg.value;
+                return seg.value > 0 ? (
+                  <rect
+                    key={seg.name}
+                    x={xRight(i)}
+                    y={segY}
+                    width={barWidth}
+                    height={segHeight}
+                    fill={seg.color}
+                    rx={1}
+                  >
+                    <title>
+                      {seg.name} · {dayFormatter.format(new Date(day.date + "T00:00:00.000Z"))}: {seg.value}
+                    </title>
+                  </rect>
+                ) : null;
+              })}
+            </g>
+          );
+        })}
+
+        {/* X labels */}
+        {merged.map((day, i) => (
+          <text
+            key={day.date}
+            x={padding.left + i * barGroupWidth + barGroupWidth / 2}
+            y={height - 14}
+            textAnchor="middle"
+            className="trend-axis-label"
+          >
+            {dayFormatter.format(new Date(day.date + "T00:00:00.000Z"))}
+          </text>
+        ))}
+
+        {/* Section labels */}
+        <text
+          x={padding.left + plotWidth * 0.25}
+          y={14}
+          textAnchor="middle"
+          fill="#8b5cf6"
+          style={{ fontSize: 11, fontWeight: 600, letterSpacing: "0.05em" }}
+        >
+          INFLOW
+        </text>
+        <text
+          x={padding.left + plotWidth * 0.75}
+          y={14}
+          textAnchor="middle"
+          fill="var(--text-muted)"
+          style={{ fontSize: 11, fontWeight: 600, letterSpacing: "0.05em" }}
+        >
+          RESOLVED
+        </text>
+      </svg>
+
+      {/* Summary stats */}
+      {merged.length >= 2 && (
+        <div
+          style={{
+            display: "flex",
+            gap: 24,
+            justifyContent: "center",
+            marginTop: 12,
+            flexWrap: "wrap" as const,
+          }}
+        >
+          <span style={{ fontSize: 13, color: "var(--text-muted)" }}>
+            Avg inflow:{" "}
+            <strong style={{ color: "#8b5cf6" }}>{avgInflow}</strong>/day
+          </span>
+          <span style={{ fontSize: 13, color: "var(--text-muted)" }}>
+            Sarah resolves:{" "}
+            <strong style={{ color: "#22c55e" }}>{avgSarahResolved}</strong>/day ({sarahRate}%)
+          </span>
+          <span style={{ fontSize: 13, color: "var(--text-muted)" }}>
+            Humans resolve:{" "}
+            <strong style={{ color: "var(--text)" }}>{avgHumanResolved}</strong>/day
+          </span>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function ResolutionChart({ rows }: { rows: ResolutionRow[] }) {
   const days = rows.slice(-14);
   const width = 900;
@@ -1167,6 +1416,24 @@ export default function Home() {
             <strong>{metricDefinitionLabels[activeMetric]}</strong>
             <p>{metricDefinitions[activeMetric]}</p>
           </aside>
+        ) : null}
+
+        {dashboard?.inflow && dashboard.inflow.length > 0 && dashboard?.resolutions ? (
+          <section className="queue-health">
+            <div className="section-heading">
+              <div>
+                <p className="eyebrow">End-to-end ticket flow</p>
+                <h2>From queue entry to resolution</h2>
+                <p className="history-subtitle">
+                  Daily inflow (purple) vs resolutions by Sarah (AI) and human agents · Last 14 days
+                </p>
+              </div>
+            </div>
+            <TicketFlowChart
+              inflow={dashboard.inflow}
+              resolutions={dashboard.resolutions}
+            />
+          </section>
         ) : null}
 
         {dashboard?.history ? (

@@ -20,6 +20,7 @@ const globalCache = globalThis as typeof globalThis & {
 
 const CACHE_FILE = join(process.cwd(), ".cache", "dashboard.json");
 const RESOLUTIONS_FILE = join(process.cwd(), ".cache", "resolutions.json");
+const INFLOW_FILE = join(process.cwd(), ".cache", "inflow.json");
 const SNAPSHOT_METRIC_KEYS = [
   "newTotal",
   "newUnder24",
@@ -116,6 +117,28 @@ function readResolutions(): ResolutionRow[] {
   }
 }
 
+type InflowRow = {
+  date: string;
+  total: number;
+  sarah: number;
+  mari: number;
+  michael: number;
+  gian: number;
+  other: number;
+};
+
+function readInflow(): InflowRow[] {
+  try {
+    if (!existsSync(INFLOW_FILE)) return [];
+    const raw = readFileSync(INFLOW_FILE, "utf-8");
+    const parsed = JSON.parse(raw);
+    const rows = Array.isArray(parsed?.rows) ? parsed.rows : [];
+    return rows.slice(-14);
+  } catch {
+    return [];
+  }
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
 }
@@ -159,6 +182,7 @@ async function prepareCachedDashboard(fileData: unknown) {
     ...fileData,
     history: await loadHistory(),
     resolutions: readResolutions(),
+    inflow: readInflow(),
   };
 }
 
