@@ -1124,7 +1124,7 @@ function WeeklyFlowSummary({
         </tbody>
       </table>
       <p style={{ fontSize: 11, color: "var(--text-dim)", marginTop: 8, marginBottom: 0 }}>
-        Sarah resolution rate = Sarah resolved ÷ total inflow for that week. Weeks are Monday–Sunday UTC.
+        Sarah resolution rate = Sarah resolved ÷ total inflow for that week. Weeks are Monday–Sunday GMT+8.
       </p>
     </div>
   );
