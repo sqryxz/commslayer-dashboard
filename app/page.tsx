@@ -991,6 +991,145 @@ function TicketFlowChart({
   );
 }
 
+function WeeklyFlowSummary({
+  inflow,
+  resolutions,
+}: {
+  inflow: InflowRow[];
+  resolutions: ResolutionRow[];
+}) {
+  // Merge inflow and resolution data by date (same logic as TicketFlowChart)
+  const inflowDays = inflow.slice(-14);
+  const resDays = resolutions.slice(-14);
+  const allDates = Array.from(
+    new Set([...inflowDays.map((d) => d.date), ...resDays.map((d) => d.date)]),
+  ).sort();
+
+  const merged = allDates.map((date) => {
+    const inf = inflowDays.find((d) => d.date === date);
+    const res = resDays.find((d) => d.date === date);
+    return {
+      date,
+      inflow: inf?.total ?? 0,
+      sarahResolved: res?.unassigned ?? 0,
+      mariResolved: res?.mari ?? 0,
+      michaelResolved: res?.michael ?? 0,
+      gianResolved: res?.gian ?? 0,
+    };
+  });
+
+  // Group into Mon–Sun weeks
+  const weeksMap = new Map<string, {
+    weekStart: string;
+    weekLabel: string;
+    inflow: number;
+    sarah: number;
+    mari: number;
+    michael: number;
+    gian: number;
+  }>();
+
+  for (const day of merged) {
+    const d = new Date(day.date + "T00:00:00.000Z");
+    const dayOfWeek = d.getUTCDay(); // 0=Sun, 1=Mon, ..., 6=Sat
+    // Monday as start of week
+    const mondayOffset = dayOfWeek === 0 ? -6 : 1 - dayOfWeek;
+    const monday = new Date(d);
+    monday.setUTCDate(d.getUTCDate() + mondayOffset);
+    const weekStart = monday.toISOString().slice(0, 10);
+    const sunday = new Date(monday);
+    sunday.setUTCDate(monday.getUTCDate() + 6);
+
+    const fmt = new Intl.DateTimeFormat("en-AU", { day: "numeric", month: "short" });
+    const weekLabel = `${fmt.format(monday)} – ${fmt.format(sunday)}`;
+
+    if (!weeksMap.has(weekStart)) {
+      weeksMap.set(weekStart, {
+        weekStart,
+        weekLabel,
+        inflow: 0,
+        sarah: 0,
+        mari: 0,
+        michael: 0,
+        gian: 0,
+      });
+    }
+    const wk = weeksMap.get(weekStart)!;
+    wk.inflow += day.inflow;
+    wk.sarah += day.sarahResolved;
+    wk.mari += day.mariResolved;
+    wk.michael += day.michaelResolved;
+    wk.gian += day.gianResolved;
+  }
+
+  const weeks = Array.from(weeksMap.values()).sort((a, b) =>
+    a.weekStart < b.weekStart ? -1 : 1,
+  );
+
+  const cellStyle: React.CSSProperties = {
+    padding: "6px 10px",
+    borderBottom: "1px solid var(--border)",
+    fontSize: 13,
+    textAlign: "right" as const,
+    fontVariantNumeric: "tabular-nums",
+  };
+  const headerStyle: React.CSSProperties = {
+    ...cellStyle,
+    fontWeight: 600,
+    color: "var(--text-muted)",
+    fontSize: 11,
+    textTransform: "uppercase" as const,
+    letterSpacing: "0.05em",
+  };
+
+  return (
+    <div style={{ marginTop: 16, overflowX: "auto" as const }}>
+      <table
+        style={{
+          width: "100%",
+          borderCollapse: "collapse" as const,
+          fontSize: 13,
+        }}
+      >
+        <thead>
+          <tr>
+            <th style={{ ...headerStyle, textAlign: "left" as const }}>Week (Mon–Sun)</th>
+            <th style={headerStyle}>Inflow</th>
+            <th style={{ ...headerStyle, color: "#22c55e" }}>Sarah (AI)</th>
+            <th style={{ ...headerStyle, color: "#26b2dd" }}>Mari</th>
+            <th style={{ ...headerStyle, color: "#d3aa22" }}>Michael</th>
+            <th style={{ ...headerStyle, color: "#d96e5f" }}>Gian</th>
+            <th style={headerStyle}>Sarah rate</th>
+          </tr>
+        </thead>
+        <tbody>
+          {weeks.map((wk) => {
+            const rate = wk.inflow > 0 ? Math.round((wk.sarah / wk.inflow) * 100) : 0;
+            return (
+              <tr key={wk.weekStart}>
+                <td style={{ ...cellStyle, textAlign: "left" as const, color: "var(--text)" }}>
+                  {wk.weekLabel}
+                </td>
+                <td style={{ ...cellStyle, color: "#8b5cf6", fontWeight: 600 }}>{wk.inflow}</td>
+                <td style={{ ...cellStyle, color: "#22c55e", fontWeight: 600 }}>{wk.sarah}</td>
+                <td style={cellStyle}>{wk.mari}</td>
+                <td style={cellStyle}>{wk.michael}</td>
+                <td style={cellStyle}>{wk.gian}</td>
+                <td style={{ ...cellStyle, fontWeight: 600, color: rate >= 50 ? "#22c55e" : "var(--text)" }}>
+                  {rate}%
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+      <p style={{ fontSize: 11, color: "var(--text-dim)", marginTop: 8, marginBottom: 0 }}>
+        Sarah resolution rate = Sarah resolved ÷ total inflow for that week. Weeks are Monday–Sunday UTC.
+      </p>
+    </div>
+  );
+}
+
 function ResolutionChart({ rows }: { rows: ResolutionRow[] }) {
   const days = rows.slice(-14);
   const [selectedDay, setSelectedDay] = useState<number | null>(null);
@@ -1583,6 +1722,10 @@ export default function Home() {
                 </div>
               </dl>
             </details>
+            <WeeklyFlowSummary
+              inflow={dashboard.inflow}
+              resolutions={dashboard.resolutions}
+            />
           </section>
         ) : null}
 
