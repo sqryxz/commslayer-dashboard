@@ -989,6 +989,7 @@ function TicketFlowChart({
 
 function ResolutionChart({ rows }: { rows: ResolutionRow[] }) {
   const days = rows.slice(-14);
+  const [selectedDay, setSelectedDay] = useState<number | null>(null);
   const width = 900;
   const height = 250;
   const padding = { top: 22, right: 28, bottom: 42, left: 48 };
@@ -999,7 +1000,7 @@ function ResolutionChart({ rows }: { rows: ResolutionRow[] }) {
     { key: "mari" as const, name: "Mari", color: "#26b2dd" },
     { key: "michael" as const, name: "Michael", color: "#d3aa22" },
     { key: "gian" as const, name: "Gian", color: "#d96e5f" },
-    { key: "unassigned" as const, name: "Unassigned", color: "#888888" },
+    { key: "unassigned" as const, name: "Sarah (AI)", color: "#22c55e" },
   ];
 
   const maximum = Math.max(1, ...days.map((d) => d.total));
@@ -1016,6 +1017,7 @@ function ResolutionChart({ rows }: { rows: ResolutionRow[] }) {
   });
 
   const dayFormatter = new Intl.DateTimeFormat("en-AU", { day: "numeric", month: "short" });
+  const barWidth = Math.max(8, plotWidth / Math.max(1, days.length) * 0.6);
 
   return (
     <div className="trend-chart-wrap">
@@ -1029,6 +1031,9 @@ function ResolutionChart({ rows }: { rows: ResolutionRow[] }) {
         <span>
           <i style={{ background: "var(--primary)", opacity: 0.6 }} />
           7-day avg
+        </span>
+        <span style={{ marginLeft: "auto", fontSize: 11, color: "var(--text-dim)" }}>
+          {selectedDay !== null ? "Click again to dismiss" : "Click a bar for breakdown"}
         </span>
       </div>
       <svg className="trend-chart" viewBox={`0 0 ${width} ${height}`} role="img" aria-label="Daily resolutions by agent with 7-day rolling average">
@@ -1046,17 +1051,50 @@ function ResolutionChart({ rows }: { rows: ResolutionRow[] }) {
 
         {/* X labels */}
         {days.map((day, index) => (
-          <text key={day.date} x={x(index)} y={height - 14} textAnchor="middle" className="trend-axis-label">
+          <text
+            key={day.date}
+            x={x(index)}
+            y={height - 14}
+            textAnchor="middle"
+            className="trend-axis-label"
+            style={{ fontWeight: selectedDay === index ? 700 : 400, fill: selectedDay === index ? "var(--primary)" : undefined }}
+          >
             {dayFormatter.format(new Date(day.date + "T00:00:00.000Z"))}
           </text>
         ))}
 
-        {/* Stacked bars */}
+        {/* Stacked bars — clickable */}
         {days.map((day, index) => {
           let cumulative = 0;
-          const barWidth = Math.max(8, plotWidth / days.length * 0.6);
+          const isSel = selectedDay === index;
           return (
-            <g key={day.date}>
+            <g
+              key={day.date}
+              onClick={() => setSelectedDay(isSel ? null : index)}
+              style={{ cursor: "pointer" }}
+            >
+              {/* Invisible wide hit area */}
+              <rect
+                x={x(index) - barWidth * 0.9}
+                y={padding.top}
+                width={barWidth * 1.8}
+                height={plotHeight}
+                fill="transparent"
+              />
+              {/* Highlight outline when selected */}
+              {isSel && (
+                <rect
+                  x={x(index) - barWidth / 2 - 2}
+                  y={y(day.total) - 2}
+                  width={barWidth + 4}
+                  height={padding.top + plotHeight - y(day.total) + 4}
+                  fill="none"
+                  stroke="var(--primary)"
+                  strokeWidth="1.5"
+                  rx={2}
+                  opacity={0.6}
+                />
+              )}
               {agents.map((agent) => {
                 const value = day[agent.key];
                 const barHeight = (value / maximum) * plotHeight;
@@ -1071,8 +1109,10 @@ function ResolutionChart({ rows }: { rows: ResolutionRow[] }) {
                     height={barHeight}
                     fill={agent.color}
                     rx={1}
+                    opacity={selectedDay === null || isSel ? 1 : 0.35}
+                    style={{ transition: "opacity 0.2s" }}
                   >
-                    <title>{agent.name}, {dayFormatter.format(new Date(day.date + "T00:00:00.000Z"))}: {value}</title>
+                    <title>{agent.name}, {dayFormatter.format(new Date(day.date + "T00:00:00.000Z"))}: {value} ({Math.round(value / day.total * 100)}%)</title>
                   </rect>
                 ) : null;
               })}
@@ -1100,6 +1140,38 @@ function ResolutionChart({ rows }: { rows: ResolutionRow[] }) {
         )}
       </svg>
 
+      {/* Breakdown panel when a day is selected */}
+      {selectedDay !== null && days[selectedDay] ? (
+        <div style={{
+          display: "flex",
+          gap: 16,
+          justifyContent: "center",
+          marginTop: 10,
+          flexWrap: "wrap" as const,
+          padding: "10px 16px",
+          border: "1px solid var(--border)",
+          borderRadius: 6,
+          background: "var(--surface-elevated, var(--surface, #111))",
+        }}>
+          <span style={{ fontSize: 13, fontWeight: 600, color: "var(--text)", minWidth: "fit-content" }}>
+            {dayFormatter.format(new Date(days[selectedDay].date + "T00:00:00.000Z"))}:
+          </span>
+          {agents.map((agent) => {
+            const value = days[selectedDay][agent.key];
+            const total = days[selectedDay].total || 1;
+            const pct = Math.round(value / total * 100);
+            return (
+              <span key={agent.key} style={{ fontSize: 13, display: "flex", alignItems: "center", gap: 6 }}>
+                <i style={{ width: 10, height: 10, borderRadius: 2, background: agent.color, display: "inline-block" }} />
+                <span style={{ color: "var(--text-muted)" }}>{agent.name}</span>
+                <strong style={{ color: agent.color }}>{value}</strong>
+                <span style={{ color: "var(--text-dim)" }}>({pct}%)</span>
+              </span>
+            );
+          })}
+        </div>
+      ) : null}
+
       {/* Summary stats */}
       {days.length >= 2 && (
         <div style={{ display: "flex", gap: 24, justifyContent: "center", marginTop: 12, flexWrap: "wrap" as const }}>
@@ -1110,7 +1182,7 @@ function ResolutionChart({ rows }: { rows: ResolutionRow[] }) {
             7-day avg: <strong style={{ color: "var(--primary)" }}>{rollingAvg.at(-1)}</strong>/day
           </span>
           <span style={{ fontSize: 13, color: "var(--text-muted)" }}>
-            Tracked agents: <strong style={{ color: "var(--text)" }}>{(days.at(-1)?.mari ?? 0) + (days.at(-1)?.michael ?? 0) + (days.at(-1)?.gian ?? 0)}</strong>
+            Sarah (AI): <strong style={{ color: "#22c55e" }}>{days.at(-1)?.unassigned ?? 0}</strong>
           </span>
         </div>
       )}
