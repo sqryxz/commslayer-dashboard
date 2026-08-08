@@ -4,7 +4,8 @@
 
 **URL:** https://cx.xbtseal.com (Cloudflare Tunnel → localhost:3004)
 **Path:** `~/Dropbox/DWA/DWA-Brain/Commslayer Dashboard/`
-**Stack:** Vinext (Next.js fork) + React + TypeScript, Python cache warmer, Cloudflare Tunnel
+**Stack:** Vinext (Next.js fork) + React + TypeScript + Tailwind CSS, Python cache warmer, Cloudflare Tunnel
+**Theme:** Dark mode (only) — see "Theming" section below
 **Purpose:** Operations dashboard for a customer support team using Commslayer (a helpdesk tool). Shows queue metrics, ticket flow (inflow → AI resolution → human resolution), coaching priorities, and historical trends.
 
 **Agents tracked:**
@@ -93,8 +94,9 @@ Cloudflare Tunnel → cx.xbtseal.com
 | File | Role |
 |------|------|
 | `scripts/warm-cache.py` | Cache warmer — fetches API, classifies tickets, writes cache files (dashboard, resolutions, inflow). Runs via `launchd com.dwa.commslayer-warmer` every 3 hours. |
-| `app/api/dashboard/route.ts` | API route — reads cache files, serves combined JSON payload (dashboard + history + resolutions + inflow). |
 | `app/page.tsx` | Main frontend (~1700 lines) — all UI components, SVG charts, ticket tables. |
+| `app/globals.css` | CSS variables (dark theme) + all layout/typography (~1500 lines). |
+| `app/api/dashboard/route.ts` | API route — reads cache files, serves combined JSON payload (dashboard + history + resolutions + inflow). |
 | `app/lib/history.ts` | History persistence — manages `history.json` snapshots, weekly aggregation. |
 | `app/lib/commslayer.mjs` | API client (JS) — paginated fetch, rate limiter, queue fetcher. |
 | `.env.local` | Secrets — API token, assignee IDs, agent names. |
@@ -124,7 +126,7 @@ Cloudflare Tunnel auto-reconnects. No restart needed for tunnel.
 **Added:** `DailyHistorySection` + `DailyHistoryChart` — an SVG line chart showing the last 10 days of daily snapshots with:
 - Metric buttons: New, <24H, >24H, Backlog, >48H, Open (cycling)
 - Per-agent colored lines (Mari blue, Michael gold, Gian red)
-- Total trendline (dashed gray, linear regression of daily totals)
+- **Total line** — dashed grey, actual daily sum of Mari + Michael + Gian (each point hoverable, e.g., "Total, 8 Aug: 563")
 - Hover tooltips on each data point
 
 **Backend:** Added `daily` field to `HistorySummary` in `app/lib/history.ts` — exposes last 10 days of raw daily snapshots (previously only weekly aggregates were available).
@@ -163,6 +165,26 @@ Cloudflare Tunnel auto-reconnects. No restart needed for tunnel.
 
 Below the Ticket Flow chart, a `<details>` panel explains how each stage is calculated, the Sarah flow model, why inflow ≠ resolutions on a single day, and the data source. Uses color-coded labels matching the chart legend.
 
+### 5. Dark mode default
+
+The dashboard is now dark-mode-only. The entire color system in `app/globals.css` was flipped:
+
+- Background: `#0e1114` (near-black)
+- Surfaces: `#161a1e` (dark cards), `#1e2228` (elevated panels)
+- Text: `#c8ccd0` (primary), `#8a969c` (muted), `#5f6d74` (dim)
+- Accents: navy `#1a4a6e`, green `#1a8e9e`, yellow `#f7e984`
+- Borders: `rgba(255,255,255,0.08)`
+- `color-scheme: dark` set on `:root` so form controls, scrollbars, etc. follow
+
+All hardcoded light-mode hex colors (`#66737a`, `#718087`, `#526068`, etc.) were replaced with semantic CSS variables (`var(--text-muted)`, `var(--text-dim)`). All `rgba(255,255,255,0.72)` card backgrounds were replaced with `rgba(255,255,255,0.03-0.06)` for subtle dark elevation. The agent scorecards (`.agent-scorecard` at `#20252a`) were already dark — only the surrounding page needed flipping.
+
+**Semantic vars added** (used by React inline styles in `page.tsx`):
+`--text`, `--text-muted`, `--text-dim`, `--primary`, `--border`, `--surface`, `--surface-elevated`
+
+### 6. Queue history total line: actual daily sum
+
+The Queue History chart's "Total" line was changed from a linear-regression best-fit line to an actual polyline connecting the real daily sums (Mari + Michael + Gian per day). Each point is hoverable with the exact sum. Removed the dead regression code. Legend updated from "Total trend" → "Total".
+
 ## Data Insights (as of Aug 8)
 
 ### Queue state
@@ -189,13 +211,39 @@ Below the Ticket Flow chart, a `<details>` panel explains how each stage is calc
 
 2. **SVG charts, no chart library** — all charts are hand-coded SVG. This keeps the bundle small and avoids dependency issues. If adding new charts, follow the existing pattern (viewBox, polyline, circle points).
 
-3. **CSS variables for theming** — uses `var(--primary)`, `var(--text-muted)`, etc. defined in the global CSS. Agent colors are hardcoded hex in `agentColors` map.
+3. **CSS variables for theming** — uses `var(--primary)`, `var(--text-muted)`, etc. defined in the global CSS. Agent colors are hardcoded hex in `agentColors` map. See "Theming" section below.
 
 4. **Cache files are the source of truth at runtime** — the server reads `.cache/*.json` files. The Python warmer writes them every 3 hours. The server itself never calls the Commslayer API directly (except for message pagination during classification, which only the warmer does).
 
 5. **`verbatimModuleSyntax: true`** is NOT set in this project (unlike PPLLog). Standard imports work fine.
 
 6. **Rate limiting is critical** — the Commslayer API enforces ~1 req/sec. The Python warmer and JS client both implement rate limiters. Don't parallelize API calls.
+
+## Theming
+
+Dark mode is the only theme. The entire color system lives in `app/globals.css` `:root`:
+
+```css
+:root {
+  color-scheme: dark;
+  --off-white: #0e1114;            /* page background */
+  --white: #161a1e;                /* card/table surfaces */
+  --surface-elevated: #1e2228;     /* popovers, methodology panel */
+  --charcoal: #c8ccd0;             /* primary text */
+  --text-muted: #8a969c;           /* secondary text */
+  --text-dim: #5f6d74;             /* tertiary text */
+  --navy: #1a4a6e;                 /* headings, buttons */
+  --green: #1a8e9e;                /* accents, eyebrows */
+  --yellow: #f7e984;               /* highlights */
+  --line: rgba(255, 255, 255, 0.08);
+  --shadow: 0 18px 50px rgba(0, 0, 0, 0.3);
+}
+```
+
+**Semantic CSS variables** used by React inline styles in `page.tsx`:
+`--text`, `--text-muted`, `--text-dim`, `--primary`, `--border`, `--surface`, `--surface-elevated`
+
+**Adding a new chart/component:** Use semantic vars (`var(--text-muted)`, `var(--surface-elevated)`) — never hardcode hex. The agent colors (Mari/Michael/Gian/Sarah) are intentionally hardcoded because they're part of the chart legend identity, not the theme.
 
 ## GitHub Migration Notes
 

@@ -8,12 +8,14 @@ The dashboard shows:
 - **Ticket flow chart** — daily inflow (tickets entering queue) vs resolutions by Sarah (AI) and human agents (Mari, Michael, Gian), with a collapsible methodology legend
 - **Agent scorecards** — per-agent queue metrics (new, backlog, waiting times)
 - **Daily resolutions** — stacked bar chart by agent with click-to-reveal percentage breakdowns
-- **10-day queue history** — daily snapshots with trend lines
+- **10-day queue history** — daily snapshots with per-agent lines and a dashed "Total" line (actual daily sum)
 - **Coaching queue** — ticket-level table filtered by urgency
 
 **Sarah (AI):** Every conversation is auto-assigned to Sarah first. She either
 resolves it (stays unassigned) or escalates to a human agent. The dashboard
 labels these as "Sarah (AI)" resolutions in green.
+
+**Theme:** Dark mode is the only theme — see the "Theming" section below.
 
 The app runs on a local Mac Mini and is served via Cloudflare Tunnel at
 `https://cx.xbtseal.com`. The Commslayer token is used only by the
@@ -42,17 +44,21 @@ tickets).
 from the Commslayer API, classifies each ticket, and writes results to:
 
 - `.cache/dashboard.json` — live ticket data (700+ conversations, ~750KB)
-- `.cache/resolutions.json` — daily resolution counts by agent (400-day retention)
-- `.cache/inflow.json` — daily inflow counts by agent (400-day retention)
+- `.cache/resolutions.json` — daily resolution counts by `updated_at` (400-day retention)
+- `.cache/inflow.json` — daily inflow counts by `created_at` (400-day retention)
 
 Then calls the local dashboard refresh endpoint to persist a daily snapshot.
+
+The combined dashboard + resolutions + inflow API pass takes ~5-7 minutes
+for ~700 tickets. Sarah (AI) is detected via activity messages during the
+classification phase — no special API endpoint needed.
 
 Scheduled by launchd at **every 3 hours** (00:00, 03:00, 06:00, 09:00, 12:00,
 15:00, 18:00, 21:00 HKT). Also runs on boot via `RunAtLoad`.
 
 - Plist: `~/Library/LaunchAgents/com.dwa.commslayer-warmer.plist`
 - Log: `~/Library/Logs/commslayer-warmer.log`
-- Fetch time: ~5-7 minutes for ~260 tickets
+- Fetch time: ~5-7 minutes for ~700 tickets (3-min dashboard pass + ~30s for resolutions/inflow)
 
 ## Prerequisites
 
@@ -68,6 +74,7 @@ Current IDs:
 Mari    10116
 Michael 10207
 Gian    8720
+Sarah   (no assignee_id — auto-assigned by Commslayer)
 ```
 
 ## First run
@@ -87,6 +94,10 @@ COMMSLAYER_API_TOKEN=your_token_here
 COMMSLAYER_ASSIGNEE_IDS=10116,10207,8720
 COMMSLAYER_AGENT_NAMES=Mari,Michael,Gian
 ```
+
+Sarah (AI) is auto-assigned by Commslayer and does not need to be in
+`COMMSLAYER_ASSIGNEE_IDS`. She is identified through activity messages
+during classification.
 
 Start the app:
 
@@ -128,7 +139,7 @@ The app still runs locally at `http://localhost:3004`.
 | Variable | Required | Default | Purpose |
 |---|---:|---|---|
 | `COMMSLAYER_API_TOKEN` | Yes | — | Server-side integration token |
-| `COMMSLAYER_ASSIGNEE_IDS` | Yes | — | Comma-separated numeric IDs |
+| `COMMSLAYER_ASSIGNEE_IDS` | Yes | — | Comma-separated numeric IDs (Mari=10116, Michael=10207, Gian=8720) |
 | `COMMSLAYER_AGENT_NAMES` | No | `Mari,Michael,Gian` | Comma-separated display names matching the ID order |
 | `COMMSLAYER_ASSIGNEE_ID` | No | — | Backward-compatible single ID or comma-separated IDs |
 | `COMMSLAYER_API_BASE_URL` | No | Commslayer v1 API | API base URL |
@@ -137,6 +148,10 @@ The app still runs locally at `http://localhost:3004`.
 | `COMMSLAYER_REQUEST_INTERVAL_MS` | No | `1050` | Minimum delay between API requests; protects the 60 requests/minute limit |
 | `COMMSLAYER_FIRST_REPLY_THRESHOLD_HOURS` | No | `24` | New-ticket target |
 | `COMMSLAYER_BACKLOG_THRESHOLD_HOURS` | No | `48` | Backlog waiting target |
+
+**Note:** Sarah (AI) is auto-assigned by Commslayer and has no `assignee_id`
+in the API. She is automatically detected via activity messages rather than
+configured through environment variables.
 
 Do not put a real token in `.env.example`, source control, screenshots, issue
 comments, or documentation. `.env.local` is ignored by Git.
@@ -148,6 +163,7 @@ the Commslayer API every 3 hours:
 
 ```text
 GET /conversations?filter[assignee_id]=ASSIGNEE_ID&filter[status]=open&page[limit]=100
+GET /conversations?filter[status]=resolved&page[limit]=100   (for resolutions + inflow)
 ```
 
 It follows `meta.next_cursor` until every page has been collected, then
@@ -159,7 +175,9 @@ GET /conversations/{conversation_id}/messages?page[limit]=100
 
 The three agent queues are calculated independently and then combined. The
 result is written to `.cache/dashboard.json` which the Vinext server reads on
-each API request.
+each API request. Resolved conversations are also grouped by `updated_at`
+(resolutions) and `created_at` (inflow) into `.cache/resolutions.json` and
+`.cache/inflow.json` respectively.
 
 Rate limiting: 1050ms minimum between requests, 429 retry-after handling.
 
@@ -191,6 +209,12 @@ This file is ignored by Git but survives app and machine restarts. History
 is retained for 400 days. Weekly values are averages of the available daily
 point-in-time snapshots, not sums.
 
+The Queue History chart on the dashboard renders the last 10 days of raw
+daily snapshots with:
+- Per-agent colored lines (Mari blue, Michael gold, Gian red)
+- A dashed grey "Total" line connecting the actual daily sum of Mari + Michael + Gian
+- Six metric buttons: New, <24H, >24H, Backlog, >48H, Open (cycling)
+
 After each successful cache write, the warmer calls the local dashboard refresh
 endpoint so the daily snapshot is persisted without requiring a browser visit.
 The API cannot reconstruct queue states from dates before snapshots were
@@ -203,7 +227,33 @@ Historical snapshots before 2026-07-28 are retained as legacy data and are not
 directly comparable with newer snapshots. Raw messages are not persisted, so
 historical recalculation is not possible.
 
+## Resolutions and inflow
+
+`scripts/warm-cache.py` also fetches `status=resolved` conversations (newest
+first, paginated) and writes two additional cache files:
+
+- `.cache/resolutions.json` — grouped by `updated_at` date, split by `assignee_id`
+  (including `null` for Sarah AI). 400-day retention, merge strategy = newest
+  wins per date.
+- `.cache/inflow.json` — same resolved conversations re-grouped by `created_at`
+  date. No extra API calls — same data, different grouping.
+
+The API route reads both files and serves them as `resolutions[]` and
+`inflow[]` in the dashboard payload. The frontend renders them as the
+TicketFlowChart (inflow vs resolution dual bars) and the ResolutionChart
+(stacked bars with click-to-reveal percentage breakdowns).
+
+**Why inflow ≠ resolutions on a single day:** Inflow uses `created_at`
+(when the ticket entered the queue) and resolutions use `updated_at`
+(when it was resolved). A ticket created Monday may be resolved Wednesday
+— it appears in Monday's inflow but Wednesday's resolutions.
+
 ## Metric contract
+
+Resolution and inflow metrics use the same `sender_type` rules as the
+queue classification above. The dashboard separates Sarah (AI) from human
+agents using the `assignee_id` rules documented in the "Sarah (AI)
+identification" section below.
 
 ### Public reply
 
@@ -240,6 +290,27 @@ AND a public outgoing reply exists
 For the 48-hour breach metric, the waiting clock starts at the latest incoming
 message that arrived after the latest public outgoing reply.
 
+### Daily resolution
+
+```text
+status = resolved
+AND updated_at falls on that date
+```
+
+The API has no `resolved_at` field. `updated_at` is the closest proxy and
+is used to group resolutions by date.
+
+### Daily inflow
+
+```text
+status = resolved
+AND created_at falls on that date
+```
+
+Every conversation enters the queue through Sarah (AI) first, so inflow
+equals total daily ticket volume. Grouped by `created_at` date (UTC, first
+10 characters of the ISO timestamp).
+
 ### Reconciliation
 
 ```text
@@ -266,18 +337,31 @@ As of 2026-07-28, `isPublicOutgoing()` in `app/lib/metrics.mjs` requires
 Commslayer introduces additional sender types, update this filter after
 validating live data.
 
+## Sarah (AI) identification
+
+The Commslayer API has no `/agents` or `/users` endpoints. Sarah (AI) is
+identified through activity messages, not by any `assignee_id`:
+
+- **Auto-assigned:** `"Sarah was automatically assigned to this conversation"`
+- **Resolved by Sarah:** final `assignee_id` is null (the "unassigned" bucket in `.cache/resolutions.json`)
+- **Escalated:** `"Sarah was removed from the conversation: no matching guidance detected"` → human agent takes over
+
+The dashboard labels Sarah's resolutions as "Sarah (AI)" in green (`#22c55e`)
+across both the resolution chart and the ticket flow chart.
+
 ## Project structure
 
 ```text
 app/
   api/dashboard/route.ts   Reads .cache/dashboard.json, serves JSON
+  api/health/route.ts       Health check endpoint
   lib/commslayer.mjs       Commslayer API client (used by warmer historically)
   lib/demo.mjs             Three-agent demo dataset
   lib/history.ts           Persistent daily snapshots and history reads
   lib/history-math.mjs     Weekly aggregation logic
   lib/metrics.mjs          Queue classification and scorecard aggregation
   page.tsx                 Three-column interactive dashboard
-  globals.css              Dr. Woof dashboard styling
+  globals.css              Dark theme CSS variables + layout styles (~1500 lines)
 db/
   schema.ts                Legacy D1 metric snapshot schema
 drizzle/
@@ -297,6 +381,19 @@ tests/
 .env.local                 Real token + agent IDs (gitignored)
 wrangler.migrations.jsonc  Local D1 migration configuration
 ```
+
+## Theming
+
+Dark mode is the only theme. The color system is driven by CSS custom
+properties in `app/globals.css` `:root` — see the CSS variables section
+in that file for the full palette. When adding a new component:
+
+- Use semantic vars (`var(--text-muted)`, `var(--surface-elevated)`) — never hardcode hex
+- Agent colors (Mari/Michael/Gian/Sarah) are intentionally hardcoded in
+  `page.tsx`'s `agentColors` map because they're part of the chart legend
+  identity, not the theme
+- The agent scorecards (`.agent-scorecard` at `#20252a`) are already dark —
+  leave them alone
 
 ## Commands
 
@@ -323,6 +420,18 @@ npm run db:migrate:local  # apply pending migrations to local history storage
    contain ticket subjects, messages, contacts, or other customer content.
 9. The `.openai/hosting.json` file belongs to the starter runtime. This project
    is currently intended for local-only use and has no Sites `project_id`.
+10. The dashboard is dark-mode-only (no light variant). Do not add
+    `prefers-color-scheme: light` overrides. New colors should go through
+    semantic CSS variables in `app/globals.css` `:root`.
+11. The Queue History chart's "Total" line is the actual daily sum of
+    Mari + Michael + Gian, not a regression best-fit line. Each point is
+    hoverable with the exact sum.
+12. The TicketFlowChart renders a dual-bar chart: purple inflow (left) vs
+    stacked resolution bars (right). The methodology legend below uses
+    a `<details>` element (see `app/page.tsx` for the existing pattern).
+13. Sarah (AI) has no `assignee_id` — she is identified through activity
+    messages during classification. Don't add her to
+    `COMMSLAYER_ASSIGNEE_IDS`.
 
 ## Troubleshooting
 
@@ -356,7 +465,7 @@ Check the warmer log: `~/Library/Logs/commslayer-warmer.log`
 The Vinext server reads a local file — it should respond in <10ms. If the
 page loads slowly, the issue is network (Cloudflare Tunnel) or the browser.
 
-The Commslayer API fetch itself takes 5-7 minutes for ~260 tickets. This is
+The Commslayer API fetch itself takes 5-7 minutes for ~700 tickets. This is
 handled by the external warmer, not the server.
 
 ### Numbers do not match a Commslayer saved view
@@ -368,5 +477,5 @@ Compare 20 individual tickets. Check:
 - whether another agent replied to an assigned ticket;
 - whether Commslayer uses calendar hours or configured business hours;
 - whether the saved view uses `>` or `>=` at the 24/48-hour boundary; and
-- whether the saved view's “hours waiting” clock uses the first or latest
+- whether the saved view's "hours waiting" clock uses the first or latest
   unanswered incoming message.

@@ -256,3 +256,52 @@ There is no `/agents` or `/users` endpoint to look her up.
 Daily snapshots are stored in the local D1/SQLite database with one row per agent per Sydney calendar day. Weekly values shown in the trend chart are **averages** of the available daily snapshots, not sums.
 
 **Metric definition change (2026-07-28):** Snapshots before this date counted any public outgoing message (including AI) as a reply. Snapshots from this date forward count only `sender_type = "User"`. Historical data is not directly comparable.
+
+## Dashboard themes and chart conventions
+
+The dashboard is dark-mode-only. The CSS color system in `app/globals.css`
+uses semantic CSS variables (`--text`, `--text-muted`, `--text-dim`,
+`--primary`, `--border`, `--surface`, `--surface-elevated`) on a near-black
+background (`#0e1114`). Agent colors are intentionally hardcoded in
+`page.tsx`'s `agentColors` map because they're part of the chart legend
+identity, not the theme:
+
+- Sarah (AI): `#22c55e` (green)
+- Mari: `#26b2dd` (blue)
+- Michael: `#d3aa22` (gold)
+- Gian: `#d96e5f` (red)
+- Inflow: `#8b5cf6` (purple)
+
+### Chart conventions
+
+All charts are hand-coded SVG (no charting library). Five conventions to
+know when reading the chart source:
+
+1. **Stacked bars** (e.g., ResolutionChart): each bar segment is a separate
+   `<rect>` with a `<title>` for tooltips. Click-to-select uses
+   `useState<number | null>(null)` on the chart's parent group.
+2. **Line charts** (e.g., DailyHistoryChart): per-agent polylines use
+   `agentColors[name]`. The "Total" line is the actual daily sum of
+   Mari + Michael + Gian, not a regression best-fit line. Each point is a
+   `<circle>` with a `<title>` for hover tooltips.
+3. **Dual bars** (e.g., TicketFlowChart): inflow on the left, stacked
+   resolution on the right. Both bars share the same date axis.
+4. **Click-to-select** in stacked bars: each bar group `<g>` has an
+   invisible hit-area `<rect>` wider than the visible bar, an
+   `onClick={() => setSelected(i)}` handler, and a `cursor: pointer` style.
+   Selecting dims other bars to 35% opacity and shows a breakdown panel below.
+5. **Collapsible `<details>` legend** (e.g., TicketFlowChart): methodology
+   explanation below the chart. `details` element with a `<dl>` inside,
+   color-coded labels matching the chart legend.
+
+### Why "Unassigned" = Sarah in the API
+
+The `resolutions.json` cache file uses an `unassigned` bucket for conversations
+where the final `assignee_id` is null. This happens in two cases:
+
+1. Sarah (AI) resolved the conversation end-to-end (most common — ~54% of inflow)
+2. A human agent was unassigned before resolution (rare)
+
+The dashboard labels all of these as "Sarah (AI)" because the second case is
+negligible in practice. To distinguish them precisely, paginate messages
+looking for the activity message `"Sarah was automatically assigned to this conversation"`.
