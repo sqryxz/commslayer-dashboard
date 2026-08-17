@@ -4,13 +4,14 @@ import {
   getHistorySummary,
   persistDashboardSnapshot,
 } from "@/app/lib/history";
-import { readFileSync, existsSync } from "fs";
+import { readFileSync, existsSync, statSync } from "fs";
 import { join } from "path";
 
 export const dynamic = "force-dynamic";
 
 type DashboardCache = {
   expiresAt: number;
+  fileMtimeMs: number;
   value: unknown;
 };
 
@@ -83,6 +84,14 @@ async function loadHistory() {
       lastSnapshotDate: null,
       weekly: [],
     };
+  }
+}
+
+function cacheFileMtimeMs(): number {
+  try {
+    return statSync(CACHE_FILE).mtimeMs;
+  } catch {
+    return 0;
   }
 }
 
@@ -205,9 +214,17 @@ export async function GET(request: NextRequest) {
   }
 
   // forceRefresh bypasses the in-memory cache and re-reads the cache file.
-  // The cache file is written by the external Python warmer every 6 hours.
+  // The cache file is written by the external Python warmer every 3 hours.
   const now = Date.now();
   const cached = globalCache.__commslayerDashboardCache;
+  const fileMtimeMs = cacheFileMtimeMs();
+
+  // Serve from memory only while the TTL holds AND the cache file is unchanged
+  // (mtime). When the warmer writes a fresher file, pick it up immediately.
+  const memoryCacheUsable =
+    cached !== undefined &&
+    cached.expiresAt > now &&
+    (fileMtimeMs === 0 || cached.fileMtimeMs === fileMtimeMs);
 
   if (forceRefresh) {
     const fileData = readCacheFile();
@@ -216,6 +233,7 @@ export async function GET(request: NextRequest) {
       const cacheSeconds = envNumber("COMMSLAYER_CACHE_SECONDS", 21600);
       globalCache.__commslayerDashboardCache = {
         expiresAt: now + cacheSeconds * 1000,
+        fileMtimeMs,
         value: dashboard,
       };
       return NextResponse.json(dashboard, {
@@ -225,7 +243,7 @@ export async function GET(request: NextRequest) {
   }
 
   // Check in-memory cache (populated from file on first read).
-  if (cached && cached.expiresAt > now) {
+  if (memoryCacheUsable) {
     return NextResponse.json(cached.value, {
       headers: noStoreHeaders(),
     });
@@ -238,6 +256,7 @@ export async function GET(request: NextRequest) {
     const cacheSeconds = envNumber("COMMSLAYER_CACHE_SECONDS", 21600);
     globalCache.__commslayerDashboardCache = {
       expiresAt: now + cacheSeconds * 1000,
+      fileMtimeMs,
       value: dashboard,
     };
     return NextResponse.json(dashboard, {

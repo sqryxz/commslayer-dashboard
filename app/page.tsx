@@ -709,10 +709,12 @@ function DailyHistorySection({
   history,
   metric,
   onMetricChange,
+  refreshedAt,
 }: {
   history: HistorySummary;
   metric: ChartMetricKey;
   onMetricChange: (metric: ChartMetricKey) => void;
+  refreshedAt?: string;
 }) {
   const daily = history.daily ?? [];
   const recentDays = daily.slice(-10);
@@ -726,6 +728,7 @@ function DailyHistorySection({
         </div>
         <div className="refresh-meta">
           <span>Last refreshed</span>
+          <strong>{formatDate(refreshedAt ?? null)}</strong>
         </div>
       </div>
 
@@ -998,7 +1001,7 @@ function WeeklyFlowSummary({
   inflow: InflowRow[];
   resolutions: ResolutionRow[];
 }) {
-  // Merge inflow and resolution data by date (same logic as TicketFlowChart)
+  // Merge inflow and resolution data by date
   const inflowDays = inflow.slice(-14);
   const resDays = resolutions.slice(-14);
   const allDates = Array.from(
@@ -1010,29 +1013,25 @@ function WeeklyFlowSummary({
     const res = resDays.find((d) => d.date === date);
     return {
       date,
-      inflow: inf?.total ?? 0,
+      entered: inf?.total ?? 0,
+      resolved:
+        (res?.mari ?? 0) + (res?.michael ?? 0) + (res?.gian ?? 0) + (res?.unassigned ?? 0),
       sarahResolved: res?.unassigned ?? 0,
-      mariResolved: res?.mari ?? 0,
-      michaelResolved: res?.michael ?? 0,
-      gianResolved: res?.gian ?? 0,
     };
   });
 
-  // Group into Mon–Sun weeks
+  // Group into Mon–Sun weeks (dates are already GMT+8)
   const weeksMap = new Map<string, {
     weekStart: string;
     weekLabel: string;
-    inflow: number;
+    entered: number;
+    resolved: number;
     sarah: number;
-    mari: number;
-    michael: number;
-    gian: number;
   }>();
 
   for (const day of merged) {
     const d = new Date(day.date + "T00:00:00.000Z");
     const dayOfWeek = d.getUTCDay(); // 0=Sun, 1=Mon, ..., 6=Sat
-    // Monday as start of week
     const mondayOffset = dayOfWeek === 0 ? -6 : 1 - dayOfWeek;
     const monday = new Date(d);
     monday.setUTCDate(d.getUTCDate() + mondayOffset);
@@ -1047,19 +1046,15 @@ function WeeklyFlowSummary({
       weeksMap.set(weekStart, {
         weekStart,
         weekLabel,
-        inflow: 0,
+        entered: 0,
+        resolved: 0,
         sarah: 0,
-        mari: 0,
-        michael: 0,
-        gian: 0,
       });
     }
     const wk = weeksMap.get(weekStart)!;
-    wk.inflow += day.inflow;
+    wk.entered += day.entered;
+    wk.resolved += day.resolved;
     wk.sarah += day.sarahResolved;
-    wk.mari += day.mariResolved;
-    wk.michael += day.michaelResolved;
-    wk.gian += day.gianResolved;
   }
 
   const weeks = Array.from(weeksMap.values()).sort((a, b) =>
@@ -1067,7 +1062,7 @@ function WeeklyFlowSummary({
   );
 
   const cellStyle: React.CSSProperties = {
-    padding: "6px 10px",
+    padding: "7px 12px",
     borderBottom: "1px solid var(--border)",
     fontSize: 13,
     textAlign: "right" as const,
@@ -1080,52 +1075,147 @@ function WeeklyFlowSummary({
     fontSize: 11,
     textTransform: "uppercase" as const,
     letterSpacing: "0.05em",
+    borderBottom: "2px solid var(--border)",
   };
 
+  const pct = (num: number, denom: number) =>
+    denom > 0 ? Math.round((num / denom) * 100) : null;
+
   return (
-    <div style={{ marginTop: 16, overflowX: "auto" as const }}>
-      <table
+    <div style={{ marginTop: 16 }}>
+      <div style={{ overflowX: "auto" as const }}>
+        <table
+          style={{
+            width: "100%",
+            borderCollapse: "collapse" as const,
+            fontSize: 13,
+          }}
+        >
+          <thead>
+            <tr>
+              <th style={{ ...headerStyle, textAlign: "left" as const }}>Week</th>
+              <th style={headerStyle}>Entered</th>
+              <th style={headerStyle}>Resolved</th>
+              <th style={{ ...headerStyle, color: "#22c55e" }}>Sarah Resolved</th>
+              <th style={headerStyle}>AI Resolution Rate</th>
+              <th style={headerStyle}>Overall Resolution Rate</th>
+              <th style={headerStyle}>Net Ticket Flow</th>
+            </tr>
+          </thead>
+          <tbody>
+            {weeks.map((wk) => {
+              const aiRate = pct(wk.sarah, wk.resolved);
+              const overallRate = pct(wk.resolved, wk.entered);
+              const net = wk.entered - wk.resolved;
+              return (
+                <tr key={wk.weekStart}>
+                  <td style={{ ...cellStyle, textAlign: "left" as const, color: "var(--text)" }}>
+                    {wk.weekLabel}
+                  </td>
+                  <td style={{ ...cellStyle, color: "#8b5cf6", fontWeight: 600 }}>
+                    {wk.entered}
+                  </td>
+                  <td style={{ ...cellStyle, color: "var(--text)", fontWeight: 600 }}>
+                    {wk.resolved}
+                  </td>
+                  <td style={{ ...cellStyle, color: "#22c55e", fontWeight: 600 }}>
+                    {wk.sarah}
+                  </td>
+                  <td style={cellStyle}>
+                    {aiRate === null ? "—" : `${aiRate}%`}
+                  </td>
+                  <td style={cellStyle}>
+                    {overallRate === null ? "—" : `${overallRate}%`}
+                  </td>
+                  <td
+                    style={{
+                      ...cellStyle,
+                      fontWeight: 600,
+                      color: net > 0 ? "#d96e5f" : net < 0 ? "#22c55e" : "var(--text-muted)",
+                    }}
+                  >
+                    {net > 0 ? "+" : ""}{net}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+
+      <details
         style={{
-          width: "100%",
-          borderCollapse: "collapse" as const,
+          marginTop: 14,
+          padding: "14px 18px",
+          border: "1px solid var(--border)",
+          borderRadius: 6,
+          background: "var(--surface-elevated, var(--surface, #111))",
           fontSize: 13,
+          lineHeight: 1.7,
+          color: "var(--text-muted)",
         }}
       >
-        <thead>
-          <tr>
-            <th style={{ ...headerStyle, textAlign: "left" as const }}>Week (Mon–Sun)</th>
-            <th style={headerStyle}>Inflow</th>
-            <th style={{ ...headerStyle, color: "#22c55e" }}>Sarah (AI)</th>
-            <th style={{ ...headerStyle, color: "#26b2dd" }}>Mari</th>
-            <th style={{ ...headerStyle, color: "#d3aa22" }}>Michael</th>
-            <th style={{ ...headerStyle, color: "#d96e5f" }}>Gian</th>
-            <th style={headerStyle}>Sarah rate</th>
-          </tr>
-        </thead>
-        <tbody>
-          {weeks.map((wk) => {
-            const rate = wk.inflow > 0 ? Math.round((wk.sarah / wk.inflow) * 100) : 0;
-            return (
-              <tr key={wk.weekStart}>
-                <td style={{ ...cellStyle, textAlign: "left" as const, color: "var(--text)" }}>
-                  {wk.weekLabel}
-                </td>
-                <td style={{ ...cellStyle, color: "#8b5cf6", fontWeight: 600 }}>{wk.inflow}</td>
-                <td style={{ ...cellStyle, color: "#22c55e", fontWeight: 600 }}>{wk.sarah}</td>
-                <td style={cellStyle}>{wk.mari}</td>
-                <td style={cellStyle}>{wk.michael}</td>
-                <td style={cellStyle}>{wk.gian}</td>
-                <td style={{ ...cellStyle, fontWeight: 600, color: rate >= 50 ? "#22c55e" : "var(--text)" }}>
-                  {rate}%
-                </td>
-              </tr>
-            );
-          })}
-        </tbody>
-      </table>
-      <p style={{ fontSize: 11, color: "var(--text-dim)", marginTop: 8, marginBottom: 0 }}>
-        Sarah resolution rate = Sarah resolved ÷ total inflow for that week. Weeks are Monday–Sunday GMT+8.
-      </p>
+        <summary
+          style={{ cursor: "pointer", fontWeight: 600, color: "var(--text)" }}
+        >
+          How this is calculated
+        </summary>
+        <div style={{ marginTop: 12 }}>
+          <p style={{ marginTop: 0, marginBottom: 12, color: "var(--text-dim)" }}>
+            The browser reads stored aggregates. The Commslayer token and API requests stay on the server.
+          </p>
+          <ol style={{ paddingLeft: 20, margin: 0, display: "grid", gap: 10 }}>
+            <li>
+              <strong style={{ color: "#8b5cf6" }}>Entered</strong>
+              {" — "}
+              Weekly sum of records in the current 14-day refresh whose{" "}
+              <code>created_at</code> falls inside that week after conversion to Asia/Manila.
+              The server reads <code>GET /conversations?filter[status]=resolved</code> with
+              cursor pagination at 100 records per page. This is a queue-entry proxy for
+              conversations already present in the resolved dataset, not every live queue entry.
+            </li>
+            <li>
+              <strong style={{ color: "var(--text)" }}>Resolved</strong>
+              {" — "}
+              Weekly count of the same resolved-conversation records whose{" "}
+              <code>updated_at</code> falls inside that week after conversion to Asia/Manila.
+              Commslayer does not provide <code>resolved_at</code> in this data path, so{" "}
+              <code>updated_at</code> is the resolution-date proxy.
+            </li>
+            <li>
+              <strong style={{ color: "#22c55e" }}>Sarah Resolved</strong>
+              {" — "}
+              Subset of Resolved where the final <code>assignee_id</code> is null.
+              Each record is assigned to the Monday–Sunday week containing its{" "}
+              <code>updated_at</code> date.
+            </li>
+            <li>
+              <strong style={{ color: "var(--text)" }}>AI Resolution Rate</strong>
+              {" — "}
+              Sarah Resolved ÷ Resolved × 100 for the same Monday–Sunday week. This shows
+              Sarah's share of all resolved conversations. A week with zero Resolved shows —.
+            </li>
+            <li>
+              <strong style={{ color: "var(--text)" }}>Overall Resolution Rate</strong>
+              {" — "}
+              Resolved ÷ Entered × 100 for the same Monday–Sunday week. A week with zero
+              Entered shows — because the rate cannot be calculated.
+            </li>
+            <li>
+              <strong style={{ color: "var(--text)" }}>Net Ticket Flow</strong>
+              {" — "}
+              Entered − Resolved for the same Monday–Sunday week. A positive result is net
+              inflow: more tickets entered than were resolved. A negative result is net
+              outflow: more tickets were resolved than entered.
+            </li>
+          </ol>
+          <p style={{ marginTop: 12, marginBottom: 0, fontSize: 12, color: "var(--text-dim)" }}>
+            Weekly boundary: Monday 00:00 through Sunday 23:59, Asia/Manila.
+            Resolved conversations grouped by <code>created_at</code> date (queue-entry proxy),
+            <code>updated_at</code> date (resolution proxy), and final <code>assignee_id</code>.
+          </p>
+        </div>
+      </details>
     </div>
   );
 }
@@ -1491,7 +1581,9 @@ export default function Home() {
 
   useEffect(() => {
     // Fetch once on mount.  No polling — data is refreshed by the
-    // external warmer at 00:00, 06:00, 12:00, 18:00 HKT.
+    // external warmer every 3 hours (00:00, 03:00, ... 21:00 HKT).
+    // The server picks up each warmer write immediately (mtime-based
+    // cache invalidation), so a page reload always shows fresh data.
     const timer = window.setTimeout(() => void loadDashboard(), 0);
     return () => window.clearTimeout(timer);
   }, [loadDashboard]);
@@ -1722,6 +1814,20 @@ export default function Home() {
                 </div>
               </dl>
             </details>
+          </section>
+        ) : null}
+
+        {dashboard?.inflow && dashboard.inflow.length > 0 && dashboard?.resolutions ? (
+          <section className="queue-health">
+            <div className="section-heading">
+              <div>
+                <p className="eyebrow">Weekly summary</p>
+                <h2>Weekly ticket flow</h2>
+                <p className="history-subtitle">
+                  From queue entry to resolution · Monday–Sunday weeks, Asia/Manila
+                </p>
+              </div>
+            </div>
             <WeeklyFlowSummary
               inflow={dashboard.inflow}
               resolutions={dashboard.resolutions}
@@ -1734,6 +1840,7 @@ export default function Home() {
             history={dashboard.history}
             metric={chartMetric}
             onMetricChange={setChartMetric}
+            refreshedAt={dashboard.refreshedAt}
           />
         ) : null}
 
